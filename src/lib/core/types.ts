@@ -1,0 +1,146 @@
+/**
+ * Who Am I — core domain types and platform interfaces.
+ *
+ * This module is deliberately framework-agnostic. It knows nothing about
+ * Tauri, the browser, or Node. All I/O is reached through the {@link Platform}
+ * interfaces, which the Tauri frontend and the test/CLI harness implement
+ * differently. That is what keeps the core testable on its own.
+ *
+ * The one rule from the spec governs everything here:
+ *   Plain text in the Git repo is canonical. SQLite is a throwaway index.
+ *   Every write goes to the text first, then to the index — never the reverse.
+ */
+
+/** The canonical timeline entry types (spec §3). Unknown values are tolerated
+ * on read so the schema can grow without breaking older clients. */
+export type EntryType =
+  | 'journal'
+  | 'role'
+  | 'project'
+  | 'win'
+  | 'skill'
+  | 'education'
+  | 'milestone'
+  | 'mention';
+
+export const ENTRY_TYPES: readonly EntryType[] = [
+  'journal',
+  'role',
+  'project',
+  'win',
+  'skill',
+  'education',
+  'milestone',
+  'mention'
+];
+
+/**
+ * Parsed frontmatter for a timeline entry.
+ *
+ * The required fields (id, type, date, title, private) are typed explicitly.
+ * Everything else — known-optional fields like `tags`/`org`/`links` as well as
+ * fields this version has never heard of — rides along in the index signature
+ * and MUST be preserved on round-trip (spec §3).
+ */
+export interface EntryFrontmatter {
+  /** ULID. Stable, time-sortable, unique. The canonical identity. */
+  id: string;
+  /** journal | role | project | win | skill | education | milestone | mention */
+  type: EntryType | string;
+  /** ISO 8601 date the event happened: YYYY-MM-DD. */
+  date: string;
+  /** If true, NEVER appears in any generated artifact. */
+  private: boolean;
+  title: string;
+  /** When the entry was first written (set once). */
+  created?: string;
+  /** Last edit; the app maintains this, Git is the backstop. */
+  updated?: string;
+  tags?: string[];
+  /** Unknown / type-specific keys, preserved verbatim across read+write. */
+  [key: string]: unknown;
+}
+
+/** A timeline entry: structured frontmatter + free-form Markdown body. */
+export interface Entry {
+  frontmatter: EntryFrontmatter;
+  body: string;
+  /** Path relative to the record root, e.g. `entries/2024-03-14-x-7g8h9j.md`.
+   * Present when the entry was loaded from / written to disk. */
+  path?: string;
+}
+
+/** Structured identity for the singleton profile (spec §4). */
+export interface ProfileFrontmatter {
+  name?: string;
+  headline?: string;
+  identities?: Record<string, string>;
+  location?: string;
+  [key: string]: unknown;
+}
+
+export interface Profile {
+  frontmatter: ProfileFrontmatter;
+  body: string;
+}
+
+// ---------------------------------------------------------------------------
+// Platform interfaces — the only seam through which the core does I/O.
+// ---------------------------------------------------------------------------
+
+/** Minimal filesystem surface the core needs. Paths are absolute unless the
+ * method name says otherwise. Implementations: node `fs`, Tauri `plugin-fs`. */
+export interface FileSystem {
+  readTextFile(path: string): Promise<string>;
+  writeTextFile(path: string, contents: string): Promise<void>;
+  exists(path: string): Promise<boolean>;
+  /** Create a directory (and parents). No-op if it already exists. */
+  mkdir(path: string): Promise<void>;
+  removeFile(path: string): Promise<void>;
+  /** List immediate file names (not full paths) in a directory. Returns []
+   * if the directory does not exist. */
+  readDir(path: string): Promise<string[]>;
+}
+
+/** A row-returning result, narrowed by the caller. */
+export type Row = Record<string, unknown>;
+
+/** Minimal async SQL surface. Implementations: better-sqlite3 (wrapped),
+ * Tauri `plugin-sql`. Both speak SQLite. */
+export interface Database {
+  /** Run a statement (or several, for schema setup) with optional params. */
+  execute(sql: string, params?: unknown[]): Promise<void>;
+  /** Run a query and return rows. */
+  select<T extends Row = Row>(sql: string, params?: unknown[]): Promise<T[]>;
+  close(): Promise<void>;
+}
+
+/** Result of running a git subprocess. */
+export interface GitResult {
+  code: number;
+  stdout: string;
+  stderr: string;
+}
+
+/** Shells out to the system `git`. Implementations: node `child_process`,
+ * Tauri `plugin-shell`. The core never embeds a git library (spec §9). */
+export interface GitRunner {
+  /** Run `git <args>` in `cwd`. Never throws on non-zero exit — inspect
+   * `code`. */
+  run(args: string[], cwd: string): Promise<GitResult>;
+}
+
+/**
+ * The full platform bundle handed to the core. The Tauri app builds one from
+ * its plugins; tests build one from node primitives.
+ */
+export interface Platform {
+  fs: FileSystem;
+  db: Database;
+  git: GitRunner;
+  /** sha256 (hex) of a UTF-8 string. Node: crypto. Browser: SubtleCrypto. */
+  hash(content: string): Promise<string>;
+  /** Join path segments with the platform separator. The core stays
+   * separator-agnostic by routing all joins through here. */
+  joinPath(...segments: string[]): string;
+}

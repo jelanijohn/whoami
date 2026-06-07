@@ -1,0 +1,5 @@
+# better-sqlite3 ships a native binding that must be built/fetched on install.
+# It backs the node-side Platform (tests + future CLI); the Tauri app uses
+# plugin-sql instead, so this never reaches the app bundle.
+allowBuilds:
+  better-sqlite3: true

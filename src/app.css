@@ -1,0 +1,30 @@
+@import 'tailwindcss';
+
+/* Who Am I — a calm, document-like surface. The record is the point;
+   the chrome stays out of the way. */
+@theme {
+  --color-ink: #1a1a1a;
+  --color-paper: #fbfbf9;
+  --color-muted: #6b6b6b;
+  --color-line: #e4e4df;
+  --color-accent: #3b5bdb;
+  --color-private: #b54708;
+}
+
+:root {
+  color-scheme: light;
+}
+
+html,
+body {
+  background-color: var(--color-paper);
+  color: var(--color-ink);
+  font-family:
+    ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial,
+    sans-serif;
+}
+
+/* Don't let text selection feel like a native window drag. */
+* {
+  -webkit-user-select: text;
+}

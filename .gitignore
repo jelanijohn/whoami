@@ -1,0 +1,30 @@
+# --- Node / SvelteKit / Vite ---
+node_modules/
+/build/
+/.svelte-kit/
+/dist/
+.env
+.env.*
+!.env.example
+vite.config.*.timestamp-*
+
+# --- Tauri / Rust ---
+/src-tauri/target/
+/src-tauri/gen/
+
+# --- Test / coverage ---
+/coverage/
+*.tsbuildinfo
+
+# --- Local record/data scratch (never commit a record into the CODE repo) ---
+/.record-dev/
+*.db
+*.db-wal
+*.db-shm
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+
+# --- Claude local session state (keep shared config, ignore local) ---
+.claude/settings.local.json
