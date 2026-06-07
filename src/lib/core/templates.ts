@@ -17,6 +17,17 @@ dist/
 Thumbs.db
 `;
 
+/** `.gitattributes` for the record repo — pins LF so entries written on
+ * Windows, WSL, and macOS merge without line-ending churn (spec §8). */
+export const RECORD_GITATTRIBUTES = `* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.pdf binary
+`;
+
 /** README dropped into a new record folder, addressed to future-you. */
 export const RECORD_README = `# Who Am I — my record
 

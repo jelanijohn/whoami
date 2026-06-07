@@ -33,7 +33,12 @@ import {
   type NewEntryInput
 } from './entry';
 import { emptyProfile, parseProfile, PROFILE_PATH, serializeProfile } from './profile';
-import { PROFILE_BODY_PLACEHOLDER, RECORD_GITIGNORE, RECORD_README } from './templates';
+import {
+  PROFILE_BODY_PLACEHOLDER,
+  RECORD_GITATTRIBUTES,
+  RECORD_GITIGNORE,
+  RECORD_README
+} from './templates';
 import { generateResumeMarkdown } from './generators/resume';
 import { generateSiteHtml } from './generators/site';
 
@@ -73,6 +78,7 @@ export class RecordStore {
     await fs.mkdir(this.abs('templates'));
 
     await this.seedFile('.gitignore', RECORD_GITIGNORE);
+    await this.seedFile('.gitattributes', RECORD_GITATTRIBUTES);
     await this.seedFile('README.md', RECORD_README);
     if (!(await fs.exists(this.abs(PROFILE_PATH)))) {
       const profile = emptyProfile();

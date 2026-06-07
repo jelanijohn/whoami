@@ -1,0 +1,86 @@
+<script lang="ts">
+  import { app } from '$lib/state.svelte';
+
+  let lastRebuild = $state<string | null>(null);
+  let commitMsg = $state('');
+
+  async function refreshMeta() {
+    lastRebuild = app.store ? await app.store.lastRebuild() : null;
+  }
+  $effect(() => {
+    void app.entries;
+    if (app.store) refreshMeta();
+  });
+
+  async function doSync() {
+    await app.sync(commitMsg.trim() || undefined);
+    commitMsg = '';
+  }
+</script>
+
+<div class="max-w-2xl space-y-6">
+  <section>
+    <h1 class="text-lg font-semibold">Data &amp; sync</h1>
+    <p class="mt-1 text-sm text-[var(--color-muted)]">
+      The text files are canonical. The index is a throwaway cache you can rebuild any time without
+      data loss.
+    </p>
+    <dl class="mt-3 space-y-1 text-sm">
+      <div class="flex gap-2">
+        <dt class="w-32 text-[var(--color-muted)]">Record folder</dt>
+        <dd class="font-mono text-xs break-all">{app.recordRoot}</dd>
+      </div>
+      <div class="flex gap-2">
+        <dt class="w-32 text-[var(--color-muted)]">Entries indexed</dt>
+        <dd>{app.entries.length}{app.includePrivate ? '' : ' (public)'}</dd>
+      </div>
+      <div class="flex gap-2">
+        <dt class="w-32 text-[var(--color-muted)]">Last reindex</dt>
+        <dd>{lastRebuild ?? '—'}</dd>
+      </div>
+    </dl>
+  </section>
+
+  <section class="space-y-2">
+    <h2 class="text-sm font-semibold">Index</h2>
+    <div class="flex gap-2">
+      <button class="rounded border border-[var(--color-line)] px-3 py-1.5 text-sm hover:bg-gray-50" disabled={app.busy} onclick={() => app.reindex(false)}>
+        Reindex (incremental)
+      </button>
+      <button class="rounded border border-[var(--color-line)] px-3 py-1.5 text-sm hover:bg-gray-50" disabled={app.busy} onclick={() => app.reindex(true)}>
+        Full rebuild (nuke &amp; rebuild)
+      </button>
+    </div>
+    <p class="text-xs text-[var(--color-muted)]">
+      Dashboard looks stale? Rebuild. You cannot lose data this way — it reparses the text.
+    </p>
+  </section>
+
+  <section class="space-y-2">
+    <h2 class="text-sm font-semibold">Git sync</h2>
+    {#if app.git && !app.git.isRepo}
+      <div class="rounded border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+        This folder isn't a Git repository yet.
+        <button class="ml-2 rounded bg-amber-600 px-2 py-1 text-xs font-medium text-white" onclick={() => app.gitInit()}>
+          Initialize git
+        </button>
+        <p class="mt-1 text-xs">Then add a private remote with <code>git remote add origin …</code> from a terminal.</p>
+      </div>
+    {:else}
+      <div class="flex gap-2">
+        <input
+          bind:value={commitMsg}
+          placeholder="commit message (optional)"
+          class="flex-1 rounded border border-[var(--color-line)] px-3 py-1.5 text-sm"
+        />
+        <button class="rounded bg-[var(--color-accent)] px-3 py-1.5 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50" disabled={app.busy} onclick={doSync}>
+          Sync now
+        </button>
+      </div>
+      <p class="text-xs text-[var(--color-muted)]">
+        Sync runs <code>git pull --rebase</code>, then <code>add</code>/<code>commit</code>/<code>push</code>.
+        It never pushes silently or auto-resolves conflicts — a conflict stops and waits for you.
+      </p>
+    {/if}
+  </section>
+</div>

@@ -1,0 +1,32 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capabilities for Who Am I: read/write the record under $HOME, run the derived SQLite index, shell out to git for Sync, and pick a folder.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+
+    "dialog:default",
+    "dialog:allow-open",
+
+    "shell:allow-execute",
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [{ "name": "git", "cmd": "git", "args": true }]
+    },
+
+    "sql:default",
+    "sql:allow-load",
+    "sql:allow-execute",
+    "sql:allow-select",
+    "sql:allow-close",
+
+    "fs:default",
+    { "identifier": "fs:allow-read-text-file", "allow": [{ "path": "$HOME/**" }] },
+    { "identifier": "fs:allow-write-text-file", "allow": [{ "path": "$HOME/**" }] },
+    { "identifier": "fs:allow-mkdir", "allow": [{ "path": "$HOME/**" }] },
+    { "identifier": "fs:allow-remove", "allow": [{ "path": "$HOME/**" }] },
+    { "identifier": "fs:allow-read-dir", "allow": [{ "path": "$HOME/**" }] },
+    { "identifier": "fs:allow-exists", "allow": [{ "path": "$HOME/**" }] }
+  ]
+}

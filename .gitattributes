@@ -1,0 +1,13 @@
+# Normalize all text to LF in the repo, regardless of the OS that committed it.
+# This keeps diffs and cross-machine merges clean (the whole point of the
+# text-canonical model). Binary assets are left untouched.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.pdf binary
+*.ico binary
+*.woff binary
+*.woff2 binary
