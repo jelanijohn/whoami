@@ -105,7 +105,7 @@ class AppState {
       this.store = store;
       this.recordRoot = path;
       localStorage.setItem(LS_KEY, path);
-      this.buildLlm();
+      await this.buildLlm();
       await this.refresh();
       this.message = `Opened ${path}`;
     } catch (e) {
@@ -206,10 +206,23 @@ class AppState {
 
   // --- LLM provider (plan §3) -----------------------------------------------
 
-  /** (Re)build the LLM client from the current config + platform seams. */
-  private buildLlm(): void {
+  /** (Re)build the LLM client from the current config + platform seams, then
+   * recompute {@link llmReady}. Anthropic also needs a stored key to be truly
+   * ready, so a client alone is not enough (TODO §1.2). */
+  private async buildLlm(): Promise<void> {
     this.llm = this.platform && this.llmConfig ? makeLlm(this.platform, this.llmConfig) : null;
-    this.llmReady = this.llm !== null;
+    this.llmReady = this.llm !== null && (await this.llmKeyPresent());
+  }
+
+  /** True when the current provider has whatever secret it needs to actually
+   * run: Ollama needs none; Anthropic needs a key in the Secrets seam. Without
+   * this check, `llmReady` reported "Ready" with no key and the failure only
+   * surfaced at complete() time (TODO §1.2). */
+  private async llmKeyPresent(): Promise<boolean> {
+    if (!this.llm || !this.llmConfig) return false;
+    if (this.llmConfig.provider !== 'anthropic') return true;
+    const key = await this.platform?.secrets?.get(ANTHROPIC_KEY_NAME);
+    return !!key && key.trim().length > 0;
   }
 
   /** Persist the provider/model choice (outside the record repo) and rebuild. */
@@ -217,7 +230,7 @@ class AppState {
     this.llmConfig = config;
     if (config) localStorage.setItem(LS_LLM, JSON.stringify(config));
     else localStorage.removeItem(LS_LLM);
-    this.buildLlm();
+    await this.buildLlm();
     this.message = config ? `LLM set to ${config.provider} (${config.model})` : 'LLM provider cleared';
   }
 
@@ -227,7 +240,7 @@ class AppState {
     await this.guard(async () => {
       if (!this.platform?.secrets) throw new Error('No secret storage available on this platform');
       await this.platform.secrets.set(ANTHROPIC_KEY_NAME, key.trim());
-      this.buildLlm();
+      await this.buildLlm();
       this.message = 'Saved Anthropic API key';
     });
   }

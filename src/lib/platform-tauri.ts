@@ -21,7 +21,7 @@ import {
   remove,
   writeTextFile
 } from '@tauri-apps/plugin-fs';
-import { appDataDir, join } from '@tauri-apps/api/path';
+import { invoke } from '@tauri-apps/api/core';
 import type {
   Database as CoreDatabase,
   FileSystem,
@@ -94,50 +94,17 @@ const tauriHttp: Http = {
 };
 
 /**
- * INTERIM Secrets implementation — plaintext JSON in the app-data dir
- * (NEVER inside the record repo). Good enough to wire the UI; replace with a
- * keyring-backed plugin (e.g. tauri-plugin-keyring) BEFORE storing real
- * long-lived tokens. The Secrets seam makes that swap a one-file change.
+ * Secrets seam backed by the OS keyring (macOS Keychain / Windows Credential
+ * Manager / Linux Secret Service) via the `secret_*` commands in the Rust shell
+ * (src-tauri/src/lib.rs). Replaces the interim plaintext file store: provider
+ * tokens never touch disk in the clear, and never the record repo. `secret_get`
+ * returns null for an absent key, matching the seam contract.
  */
-class FileSecrets implements Secrets {
-  private cache: Record<string, string> | null = null;
-
-  private async path(): Promise<string> {
-    return join(await appDataDir(), 'whoami-secrets.json');
-  }
-
-  private async load(): Promise<Record<string, string>> {
-    if (this.cache) return this.cache;
-    try {
-      const raw = await readTextFile(await this.path());
-      this.cache = JSON.parse(raw) as Record<string, string>;
-    } catch {
-      this.cache = {};
-    }
-    return this.cache;
-  }
-
-  private async persist(): Promise<void> {
-    await writeTextFile(await this.path(), JSON.stringify(this.cache ?? {}, null, 2));
-  }
-
-  async get(key: string): Promise<string | null> {
-    const m = await this.load();
-    return m[key] ?? null;
-  }
-
-  async set(key: string, value: string): Promise<void> {
-    const m = await this.load();
-    m[key] = value;
-    await this.persist();
-  }
-
-  async delete(key: string): Promise<void> {
-    const m = await this.load();
-    delete m[key];
-    await this.persist();
-  }
-}
+const keyringSecrets: Secrets = {
+  get: (key) => invoke<string | null>('secret_get', { key }),
+  set: (key, value) => invoke<void>('secret_set', { key, value }),
+  delete: (key) => invoke<void>('secret_delete', { key })
+};
 
 /** Split a multi-statement SQL script into individual statements. Our schema
  * SQL contains no semicolons inside string literals, so a naive split is safe.
@@ -212,5 +179,5 @@ function shortHash(input: string): string {
 export async function createTauriPlatform(recordRoot: string): Promise<Platform> {
   const dbName = `whoami-index-${shortHash(recordRoot)}.db`;
   const db = await TauriDatabase.open(dbName);
-  return { fs, db, git, hash: sha256, joinPath, http: tauriHttp, secrets: new FileSecrets() };
+  return { fs, db, git, hash: sha256, joinPath, http: tauriHttp, secrets: keyringSecrets };
 }
