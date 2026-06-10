@@ -52,6 +52,18 @@
         <option value={t}>{t}</option>
       {/each}
     </select>
+    {#if app.projects.length}
+      <select
+        bind:value={app.filterProject}
+        onchange={onFilter}
+        class="rounded border border-[var(--color-line)] px-2 py-1.5 text-sm"
+      >
+        <option value="">all projects</option>
+        {#each app.projects as p (p.slug)}
+          <option value={p.slug}>{p.entry.frontmatter.title} ({p.count})</option>
+        {/each}
+      </select>
+    {/if}
     <label class="flex items-center gap-1.5 text-sm text-[var(--color-muted)]">
       <input type="checkbox" bind:checked={app.includePrivate} onchange={onFilter} />
       show private

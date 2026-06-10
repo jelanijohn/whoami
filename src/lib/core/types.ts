@@ -57,6 +57,14 @@ export interface EntryFrontmatter {
   /** Last edit; the app maintains this, Git is the backstop. */
   updated?: string;
   tags?: string[];
+  /** For `type: project` entries only: the stable kebab-case identifier other
+   * entries reference via their `project` key (ingest-reduce plan §2.1). Set
+   * once at creation, defaulting to a slug of the title. */
+  slug?: string;
+  /** Affiliation: the `slug` of the project entry this belongs to (plan §2.2).
+   * Optional — an entry with no `project` is simply outside every per-project
+   * reduction. Rides the pass-through, so it costs no DB migration. */
+  project?: string;
   /** Unknown / type-specific keys, preserved verbatim across read+write. */
   [key: string]: unknown;
 }

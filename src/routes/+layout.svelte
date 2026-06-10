@@ -12,6 +12,7 @@
 
   const nav = [
     { href: '/', label: 'Journal' },
+    { href: '/inbox', label: 'Inbox' },
     { href: '/profile', label: 'Profile' },
     { href: '/resume', label: 'Resume' },
     { href: '/site', label: 'Personal site' },

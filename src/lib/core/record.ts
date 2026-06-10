@@ -17,6 +17,7 @@ import {
   reindexFile,
   removeByPath,
   listEntries as dbListEntries,
+  listProjects as dbListProjects,
   getEntryById,
   findBySource as dbFindBySource,
   sourceIds as dbSourceIds,
@@ -24,6 +25,7 @@ import {
   allTags,
   getMeta,
   type ListFilters,
+  type ProjectSummary,
   type RebuildReport
 } from './index-db';
 import {
@@ -45,7 +47,14 @@ import { generateResumeMarkdown } from './generators/resume';
 import { generateSiteHtml } from './generators/site';
 
 // Re-export the index types the UI consumes through the facade.
-export type { ListFilters, RebuildReport };
+export type { ListFilters, ProjectSummary, RebuildReport };
+
+/** Frontmatter the human can set/override at the promote gate (plan §2.4). */
+export interface PromoteOverrides {
+  /** Project slug to affiliate the entry with. An empty string clears any
+   * suggested affiliation; `undefined` leaves the candidate's value untouched. */
+  project?: string;
+}
 
 /** The candidate inbox (ingest-reduce plan §1): staged-but-unreviewed ingested
  * items. Lives inside the record folder for locality but is gitignored — a
@@ -213,13 +222,23 @@ export class RecordStore {
   }
 
   /**
-   * Promote a candidate into the record: write it to its canonical
+   * Promote a candidate into the record: apply any review overrides (the
+   * project picker, plan §2.4), mark it reviewed, write it to its canonical
    * `entries/` path (preserving the ULID minted at stage time), remove the
    * inbox file, and reindex. This is the human commit gate.
    */
-  async promoteCandidate(candidatePath: string): Promise<Entry> {
+  async promoteCandidate(
+    candidatePath: string,
+    overrides: PromoteOverrides = {}
+  ): Promise<Entry> {
     const candidate = await this.readEntryFile(candidatePath);
-    const next = touchEntry(candidate);
+    const fm = { ...candidate.frontmatter, reviewed: true };
+    if (overrides.project !== undefined) {
+      const project = overrides.project.trim();
+      if (project) fm.project = project;
+      else delete fm.project;
+    }
+    const next = touchEntry({ ...candidate, frontmatter: fm });
     const newPath = expectedPath(next);
     await this.writeEntryFile({ ...next, path: newPath });
     await this.platform.fs.removeFile(this.abs(candidatePath));
@@ -297,6 +316,12 @@ export class RecordStore {
 
   listEntries(filters: ListFilters = {}): Promise<Entry[]> {
     return dbListEntries(this.platform.db, filters);
+  }
+
+  /** Every project entry with its affiliated-entry count (plan §2.3). Powers
+   * the project picker and the per-project filter. */
+  listProjects(includePrivate = false): Promise<ProjectSummary[]> {
+    return dbListProjects(this.platform.db, includePrivate);
   }
 
   getEntry(id: string): Promise<Entry | null> {

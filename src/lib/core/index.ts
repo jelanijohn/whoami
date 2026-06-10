@@ -57,6 +57,7 @@ export {
   reindexFile,
   removeByPath,
   listEntries,
+  listProjects,
   getEntryById,
   findBySource,
   sourceIds,
@@ -65,10 +66,11 @@ export {
   getMeta,
   SCHEMA_VERSION,
   type ListFilters,
+  type ProjectSummary,
   type RebuildReport
 } from './index-db';
 
-export { RecordStore, INBOX_DIR, provenanceKey } from './record';
+export { RecordStore, INBOX_DIR, provenanceKey, type PromoteOverrides } from './record';
 
 export {
   status as gitStatus,

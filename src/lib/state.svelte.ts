@@ -17,6 +17,7 @@ import {
   type NewEntryInput,
   type Platform,
   type Profile,
+  type ProjectSummary,
   type RebuildReport,
   type SyncResult
 } from './core';
@@ -32,6 +33,11 @@ class AppState {
   entries = $state<Entry[]>([]);
   profile = $state<Profile | null>(null);
   git = $state<GitStatus | null>(null);
+  /** Project entries with their affiliated-entry counts (plan §2.3). Powers the
+   * project filter and the inbox picker. */
+  projects = $state<ProjectSummary[]>([]);
+  /** Staged ingestion candidates awaiting review (plan §1). */
+  candidates = $state<Entry[]>([]);
 
   busy = $state(false);
   message = $state('');
@@ -40,6 +46,7 @@ class AppState {
   // Timeline filters.
   search = $state('');
   filterType = $state('');
+  filterProject = $state('');
   includePrivate = $state(false);
 
   /** Non-reactive handle to the platform (its plugin objects aren't state). */
@@ -84,14 +91,16 @@ class AppState {
     }
   }
 
-  /** Re-read the timeline, profile, and git status from disk/index. */
+  /** Re-read the timeline, profile, projects, and git status from disk/index. */
   async refresh(): Promise<void> {
     if (!this.store) return;
     this.entries = await this.store.listEntries({
       includePrivate: this.includePrivate,
       search: this.search.trim() || undefined,
-      type: this.filterType || undefined
+      type: this.filterType || undefined,
+      project: this.filterProject || undefined
     });
+    this.projects = await this.store.listProjects(this.includePrivate);
     this.profile = await this.store.readProfile();
     await this.refreshGit();
   }
@@ -133,6 +142,41 @@ class AppState {
       await this.store!.deleteEntry(entry);
       await this.refresh();
       this.message = `Removed “${entry.frontmatter.title}” (still in Git history)`;
+    });
+  }
+
+  // --- Candidate inbox (ingest review, plan §1–2) ---------------------------
+
+  /** Load the staged candidates awaiting review. */
+  async loadCandidates(): Promise<void> {
+    if (!this.store) return;
+    await this.guard(async () => {
+      this.candidates = await this.store!.listCandidates();
+      // The picker needs the current project list even before a timeline refresh.
+      this.projects = await this.store!.listProjects(true);
+    });
+  }
+
+  /** Promote a candidate into the record, assigning the picked project (plan
+   * §2.4). An empty `project` clears any suggested affiliation. */
+  async promoteCandidate(candidatePath: string, project = ''): Promise<Entry | null> {
+    if (!this.store) return null;
+    return this.guard(async () => {
+      const e = await this.store!.promoteCandidate(candidatePath, { project });
+      this.candidates = await this.store!.listCandidates();
+      await this.refresh();
+      this.message = `Promoted “${e.frontmatter.title}”`;
+      return e;
+    });
+  }
+
+  /** Reject a candidate: remembered so it is never re-proposed (plan §1). */
+  async rejectCandidate(candidatePath: string, title = ''): Promise<void> {
+    if (!this.store) return;
+    await this.guard(async () => {
+      await this.store!.rejectCandidate(candidatePath);
+      this.candidates = await this.store!.listCandidates();
+      this.message = title ? `Rejected “${title}”` : 'Rejected candidate';
     });
   }
 

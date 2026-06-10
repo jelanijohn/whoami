@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createNodePlatform } from './platform-node';
 import { RecordStore } from './record';
+import { makeEntry } from './entry';
 import type { Platform } from './types';
 
 let root: string;
@@ -149,5 +150,91 @@ describe('full-text search', () => {
     const hits = await store.listEntries({ search: 'kafka' });
     expect(hits).toHaveLength(1);
     expect(hits[0].frontmatter.title).toBe('Kafka migration');
+  });
+});
+
+describe('project dimension (plan §2)', () => {
+  it('auto-derives a stable slug for project entries, persisted to text', async () => {
+    const p = await store.createEntry({ type: 'project', title: 'Bloomberg — Core Data' });
+    expect(p.frontmatter.slug).toBe('bloomberg-core-data');
+    const onDisk = await readFile(join(root, p.path!), 'utf8');
+    expect(onDisk).toContain('slug: bloomberg-core-data');
+  });
+
+  it('honors an explicit slug and never invents one for non-project entries', async () => {
+    const p = await store.createEntry({
+      type: 'project',
+      title: 'Who Am I',
+      extra: { slug: 'whoami' }
+    });
+    expect(p.frontmatter.slug).toBe('whoami');
+    const j = await store.createEntry({ type: 'journal', title: 'Just a note' });
+    expect(j.frontmatter.slug).toBeUndefined();
+  });
+
+  it('filters entries by project affiliation (json_extract, plan §2.3)', async () => {
+    await store.createEntry({ type: 'project', title: 'Who Am I', extra: { slug: 'whoami' } });
+    await store.createEntry({ type: 'win', title: 'Shipped ingest', extra: { project: 'whoami' } });
+    await store.createEntry({ type: 'journal', title: 'Unrelated' });
+
+    const affiliated = await store.listEntries({ project: 'whoami' });
+    expect(affiliated.map((e) => e.frontmatter.title)).toEqual(['Shipped ingest']);
+  });
+
+  it('listProjects returns each project with its affiliated-entry count', async () => {
+    await store.createEntry({ type: 'project', title: 'Who Am I', extra: { slug: 'whoami' } });
+    await store.createEntry({ type: 'project', title: 'waid', extra: { slug: 'waid' } });
+    await store.createEntry({ type: 'win', title: 'a', extra: { project: 'whoami' } });
+    await store.createEntry({ type: 'journal', title: 'b', extra: { project: 'whoami' } });
+    await store.createEntry({ type: 'win', title: 'c', extra: { project: 'waid' } });
+
+    const projects = await store.listProjects();
+    const bySlug = Object.fromEntries(projects.map((p) => [p.slug, p.count]));
+    expect(bySlug).toEqual({ whoami: 2, waid: 1 });
+  });
+
+  it('excludes private affiliated entries from counts unless asked', async () => {
+    await store.createEntry({ type: 'project', title: 'Who Am I', extra: { slug: 'whoami' } });
+    await store.createEntry({ type: 'win', title: 'public', extra: { project: 'whoami' } });
+    await store.createEntry({
+      type: 'journal',
+      title: 'secret',
+      private: true,
+      extra: { project: 'whoami' }
+    });
+
+    const pub = await store.listProjects();
+    expect(pub.find((p) => p.slug === 'whoami')!.count).toBe(1);
+    const all = await store.listProjects(true);
+    expect(all.find((p) => p.slug === 'whoami')!.count).toBe(2);
+  });
+
+  it('promote assigns the picked project and marks the item reviewed (plan §2.4)', async () => {
+    const candidate = makeEntry({
+      type: 'journal',
+      title: 'Fixed the build',
+      private: true,
+      extra: { source: 'github', source_id: 'gh-1', reviewed: false }
+    });
+    const staged = await store.stageCandidate(candidate);
+    const promoted = await store.promoteCandidate(staged.path!, { project: 'whoami' });
+
+    expect(promoted.frontmatter.project).toBe('whoami');
+    expect(promoted.frontmatter.reviewed).toBe(true);
+    // End-to-end: the promoted entry is now reachable through the project filter.
+    const affiliated = await store.listEntries({ includePrivate: true, project: 'whoami' });
+    expect(affiliated.map((e) => e.frontmatter.id)).toContain(promoted.frontmatter.id);
+  });
+
+  it('an empty project override clears a suggested affiliation on promote', async () => {
+    const candidate = makeEntry({
+      type: 'journal',
+      title: 'Maybe whoami',
+      private: true,
+      extra: { source: 'github', source_id: 'gh-2', project: 'whoami' }
+    });
+    const staged = await store.stageCandidate(candidate);
+    const promoted = await store.promoteCandidate(staged.path!, { project: '' });
+    expect(promoted.frontmatter.project).toBeUndefined();
   });
 });

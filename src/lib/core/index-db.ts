@@ -277,6 +277,9 @@ export interface ListFilters {
   includePrivate?: boolean;
   type?: string;
   tag?: string;
+  /** Affiliation filter: only entries whose `project` key equals this slug
+   * (ingest-reduce plan §2.3). Matched against the frontmatter JSON blob. */
+  project?: string;
   /** Full-text query across title + body. */
   search?: string;
 }
@@ -309,6 +312,13 @@ export async function listEntries(db: Database, filters: ListFilters = {}): Prom
     where.push('e.id IN (SELECT entry_id FROM tags WHERE tag = ?)');
     params.push(filters.tag);
   }
+  if (filters.project) {
+    // Affiliation is a frontmatter pass-through key (no column), so query the
+    // JSON blob. SQLite's JSON1 (`json_extract`) ships in both better-sqlite3
+    // and Tauri's plugin-sql (plan §2.3).
+    where.push(`json_extract(e.frontmatter, '$.project') = ?`);
+    params.push(filters.project);
+  }
   if (filters.search && filters.search.trim()) {
     where.push('e.id IN (SELECT id FROM entries_fts WHERE entries_fts MATCH ?)');
     params.push(ftsQuery(filters.search));
@@ -330,6 +340,47 @@ export async function getEntryById(db: Database, id: string): Promise<Entry | nu
     [id]
   );
   return rows.length ? rowToEntry(rows[0]) : null;
+}
+
+/** A `type: project` entry plus the count of entries affiliated with it. */
+export interface ProjectSummary {
+  entry: Entry;
+  /** The project entry's `slug` (empty string if it somehow has none). */
+  slug: string;
+  /** How many entries carry `project: <slug>` (excludes the project entry
+   * itself, which has no `project` key of its own). */
+  count: number;
+}
+
+/**
+ * Every `type: project` entry with its affiliated-entry count (plan §2.3).
+ * The count is computed from the `project` frontmatter key via one grouped
+ * `json_extract` query, so it needs no dedicated column.
+ */
+export async function listProjects(
+  db: Database,
+  includePrivate = false
+): Promise<ProjectSummary[]> {
+  const privacy = includePrivate ? '' : 'AND private = 0';
+  const projectRows = await db.select<EntryRow>(
+    `SELECT body, source_path, frontmatter FROM entries
+     WHERE type = 'project' ${privacy}
+     ORDER BY date DESC, created DESC`
+  );
+  const countRows = await db.select<{ slug: string; n: number }>(
+    `SELECT json_extract(frontmatter, '$.project') AS slug, COUNT(*) AS n
+     FROM entries
+     WHERE json_extract(frontmatter, '$.project') IS NOT NULL ${privacy}
+     GROUP BY slug`
+  );
+  const counts = new Map<string, number>();
+  for (const r of countRows) counts.set(r.slug, Number(r.n));
+
+  return projectRows.map((row) => {
+    const entry = rowToEntry(row);
+    const slug = typeof entry.frontmatter.slug === 'string' ? entry.frontmatter.slug : '';
+    return { entry, slug, count: slug ? (counts.get(slug) ?? 0) : 0 };
+  });
 }
 
 /**
