@@ -178,6 +178,24 @@ export interface Secrets {
   delete(key: string): Promise<void>;
 }
 
+/** A single-turn LLM completion (ingest-reduce plan §3). The core builds the
+ * whole prompt; the platform implementation only transports it. */
+export interface LlmCompletionRequest {
+  system: string;
+  user: string;
+  /** Soft cap on output tokens; implementations clamp to provider limits. */
+  maxTokens?: number;
+}
+
+/** The LLM seam — optional on {@link Platform}. Every reduce affordance MUST
+ * degrade with a clear "no provider configured" message when it is absent, so
+ * the app stays fully usable with no LLM at all (deterministic rollup still
+ * works). Implementations live in `llm/` (Ollama, Anthropic) over the `Http`
+ * and `Secrets` seams. */
+export interface Llm {
+  complete(req: LlmCompletionRequest): Promise<string>;
+}
+
 /**
  * The full platform bundle handed to the core. The Tauri app builds one from
  * its plugins; tests build one from node primitives.
@@ -195,4 +213,7 @@ export interface Platform {
    * need them must degrade with a clear message when absent. */
   http?: Http;
   secrets?: Secrets;
+  /** Optional — present when an LLM provider is configured (plan §3). Absent is
+   * normal: the deterministic rollup and the whole app work without it. */
+  llm?: Llm;
 }

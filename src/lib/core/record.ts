@@ -36,6 +36,7 @@ import {
   touchEntry,
   type NewEntryInput
 } from './entry';
+import { rollupEntries, type ProjectRollup, type RollupOptions } from './reduce';
 import { emptyProfile, parseProfile, PROFILE_PATH, serializeProfile } from './profile';
 import {
   PROFILE_BODY_PLACEHOLDER,
@@ -322,6 +323,21 @@ export class RecordStore {
    * the project picker and the per-project filter. */
   listProjects(includePrivate = false): Promise<ProjectSummary[]> {
     return dbListProjects(this.platform.db, includePrivate);
+  }
+
+  /**
+   * Deterministic rollup over a project's affiliated entries (plan §4.2). The
+   * floor of Stage 2: needs no LLM. Includes private entries by default — the
+   * rollup serves the owner's project view; privacy is enforced where outputs
+   * are generated, not here.
+   */
+  async projectRollup(
+    slug: string,
+    opts: { includePrivate?: boolean } & RollupOptions = {}
+  ): Promise<ProjectRollup> {
+    const { includePrivate = true, ...rollupOpts } = opts;
+    const entries = await this.listEntries({ project: slug, includePrivate });
+    return rollupEntries(entries, rollupOpts);
   }
 
   getEntry(id: string): Promise<Entry | null> {

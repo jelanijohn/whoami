@@ -21,7 +21,9 @@ export type {
   Http,
   HttpRequest,
   HttpResponse,
-  Secrets
+  Secrets,
+  Llm,
+  LlmCompletionRequest
 } from './types';
 export { ENTRY_TYPES } from './types';
 
@@ -86,3 +88,5 @@ export { generateResumeMarkdown, type ResumeInput, type ResumeOptions } from './
 export { generateSiteHtml, type SiteInput } from './generators/site';
 
 export * from './ingest';
+export * from './llm';
+export * from './reduce';

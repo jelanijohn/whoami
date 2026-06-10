@@ -12,11 +12,16 @@ import {
   gitInit,
   gitStatus,
   gitSync,
+  makeLlm,
+  ANTHROPIC_KEY_NAME,
   type Entry,
   type GitStatus,
+  type Llm,
+  type LlmConfig,
   type NewEntryInput,
   type Platform,
   type Profile,
+  type ProjectRollup,
   type ProjectSummary,
   type RebuildReport,
   type SyncResult
@@ -25,6 +30,7 @@ import { createTauriPlatform } from './platform-tauri';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 
 const LS_KEY = 'whoami:recordRoot';
+const LS_LLM = 'whoami:llm';
 
 class AppState {
   /** Absolute path to the open record folder, or null before one is chosen. */
@@ -38,6 +44,10 @@ class AppState {
   projects = $state<ProjectSummary[]>([]);
   /** Staged ingestion candidates awaiting review (plan §1). */
   candidates = $state<Entry[]>([]);
+  /** Persisted LLM provider choice (plan §3), or null when none is configured. */
+  llmConfig = $state<LlmConfig | null>(null);
+  /** True when an {@link Llm} is actually built and ready to call. */
+  llmReady = $state(false);
 
   busy = $state(false);
   message = $state('');
@@ -51,11 +61,23 @@ class AppState {
 
   /** Non-reactive handle to the platform (its plugin objects aren't state). */
   private platform: Platform | null = null;
+  /** Non-reactive built LLM client (its closures aren't state). */
+  private llm: Llm | null = null;
 
-  /** Restore the last-opened folder on launch, if any. */
+  /** Restore the last-opened folder and LLM config on launch, if any. */
   async init(): Promise<void> {
-    const saved = typeof localStorage !== 'undefined' ? localStorage.getItem(LS_KEY) : null;
-    if (saved) await this.openFolder(saved);
+    if (typeof localStorage !== 'undefined') {
+      const rawLlm = localStorage.getItem(LS_LLM);
+      if (rawLlm) {
+        try {
+          this.llmConfig = JSON.parse(rawLlm) as LlmConfig;
+        } catch {
+          /* ignore a corrupt setting */
+        }
+      }
+      const saved = localStorage.getItem(LS_KEY);
+      if (saved) await this.openFolder(saved);
+    }
   }
 
   /** Prompt for a record folder and open it. */
@@ -82,6 +104,7 @@ class AppState {
       this.store = store;
       this.recordRoot = path;
       localStorage.setItem(LS_KEY, path);
+      this.buildLlm();
       await this.refresh();
       this.message = `Opened ${path}`;
     } catch (e) {
@@ -178,6 +201,52 @@ class AppState {
       this.candidates = await this.store!.listCandidates();
       this.message = title ? `Rejected “${title}”` : 'Rejected candidate';
     });
+  }
+
+  // --- LLM provider (plan §3) -----------------------------------------------
+
+  /** (Re)build the LLM client from the current config + platform seams. */
+  private buildLlm(): void {
+    this.llm = this.platform && this.llmConfig ? makeLlm(this.platform, this.llmConfig) : null;
+    this.llmReady = this.llm !== null;
+  }
+
+  /** Persist the provider/model choice (outside the record repo) and rebuild. */
+  async saveLlmConfig(config: LlmConfig | null): Promise<void> {
+    this.llmConfig = config;
+    if (config) localStorage.setItem(LS_LLM, JSON.stringify(config));
+    else localStorage.removeItem(LS_LLM);
+    this.buildLlm();
+    this.message = config ? `LLM set to ${config.provider} (${config.model})` : 'LLM provider cleared';
+  }
+
+  /** Store the Anthropic API key in the OS keyring via the Secrets seam — never
+   * in the record repo (plan §3). */
+  async setAnthropicKey(key: string): Promise<void> {
+    await this.guard(async () => {
+      if (!this.platform?.secrets) throw new Error('No secret storage available on this platform');
+      await this.platform.secrets.set(ANTHROPIC_KEY_NAME, key.trim());
+      this.buildLlm();
+      this.message = 'Saved Anthropic API key';
+    });
+  }
+
+  /** Round-trip a tiny completion to confirm the provider is reachable. */
+  async testLlm(): Promise<void> {
+    await this.guard(async () => {
+      if (!this.llm) throw new Error('No LLM provider configured');
+      const out = await this.llm.complete({
+        system: 'You are a terse assistant.',
+        user: 'Reply with exactly the word: ok',
+        maxTokens: 16
+      });
+      this.message = `LLM replied: ${out.trim().slice(0, 80) || '(empty)'}`;
+    });
+  }
+
+  /** Deterministic rollup for a project — works with no LLM configured. */
+  projectRollup(slug: string): Promise<ProjectRollup | null> {
+    return this.store ? this.store.projectRollup(slug) : Promise.resolve(null);
   }
 
   // --- Profile --------------------------------------------------------------
