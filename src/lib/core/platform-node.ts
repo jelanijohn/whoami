@@ -12,7 +12,7 @@ import { execFile } from 'node:child_process';
 import { access, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import BetterSqlite3 from 'better-sqlite3';
-import type { Database, FileSystem, GitRunner, Platform, Row } from './types';
+import type { Database, FileSystem, GitRunner, Http, Platform, Row, Secrets } from './types';
 
 const nodeFs: FileSystem = {
   async readTextFile(path) {
@@ -60,6 +60,40 @@ const nodeGit: GitRunner = {
   }
 };
 
+/** Ingestion Http seam over node's global fetch (Node 18+). */
+const nodeHttp: Http = {
+  async request(req) {
+    const resp = await fetch(req.url, {
+      method: req.method ?? 'GET',
+      headers: req.headers,
+      body: req.body
+    });
+    const headers: Record<string, string> = {};
+    resp.headers.forEach((v, k) => {
+      headers[k] = v;
+    });
+    return { status: resp.status, ok: resp.ok, headers, text: await resp.text() };
+  }
+};
+
+/** Test/CLI Secrets: in-memory, seeded on read from `WHOAMI_SECRET_<KEY>` env
+ * vars (key uppercased, non-alphanumerics → `_`). Never persisted to disk. */
+class EnvSecrets implements Secrets {
+  private map = new Map<string, string>();
+  private envName(key: string): string {
+    return `WHOAMI_SECRET_${key.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}`;
+  }
+  async get(key: string): Promise<string | null> {
+    return this.map.get(key) ?? process.env[this.envName(key)] ?? null;
+  }
+  async set(key: string, value: string): Promise<void> {
+    this.map.set(key, value);
+  }
+  async delete(key: string): Promise<void> {
+    this.map.delete(key);
+  }
+}
+
 /** better-sqlite3 wrapped to satisfy the async {@link Database} interface. */
 class NodeDatabase implements Database {
   private db: BetterSqlite3.Database;
@@ -96,6 +130,8 @@ export function createNodePlatform(dbPath: string): Platform {
     db: new NodeDatabase(dbPath),
     git: nodeGit,
     hash: sha256,
-    joinPath: (...segments: string[]) => join(...segments)
+    joinPath: (...segments: string[]) => join(...segments),
+    http: nodeHttp,
+    secrets: new EnvSecrets()
   };
 }

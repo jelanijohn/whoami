@@ -1,5 +1,11 @@
 <script lang="ts">
   import { app } from '$lib/state.svelte';
+  import {
+    DEFAULT_OLLAMA_URL,
+    DEFAULT_OLLAMA_MODEL,
+    DEFAULT_ANTHROPIC_MODEL,
+    type LlmProvider
+  } from '$lib/core';
 
   let lastRebuild = $state<string | null>(null);
   let commitMsg = $state('');
@@ -15,6 +21,32 @@
   async function doSync() {
     await app.sync(commitMsg.trim() || undefined);
     commitMsg = '';
+  }
+
+  // --- LLM provider settings (plan §3) --------------------------------------
+  let provider = $state<LlmProvider>(app.llmConfig?.provider ?? 'ollama');
+  let model = $state(app.llmConfig?.model ?? DEFAULT_OLLAMA_MODEL);
+  let baseUrl = $state(app.llmConfig?.baseUrl ?? DEFAULT_OLLAMA_URL);
+  let anthropicKey = $state('');
+
+  function onProviderChange() {
+    // Offer a sensible default model when the provider flips.
+    if (provider === 'ollama' && (!model || model.startsWith('claude'))) model = DEFAULT_OLLAMA_MODEL;
+    if (provider === 'anthropic' && (!model || !model.startsWith('claude')))
+      model = DEFAULT_ANTHROPIC_MODEL;
+  }
+
+  async function saveLlm() {
+    await app.saveLlmConfig({
+      provider,
+      model: model.trim(),
+      ...(provider === 'ollama' ? { baseUrl: baseUrl.trim() || DEFAULT_OLLAMA_URL } : {})
+    });
+  }
+
+  async function saveKey() {
+    await app.setAnthropicKey(anthropicKey);
+    anthropicKey = '';
   }
 </script>
 
@@ -54,6 +86,91 @@
     <p class="text-xs text-[var(--color-muted)]">
       Dashboard looks stale? Rebuild. You cannot lose data this way — it reparses the text.
     </p>
+  </section>
+
+  <section class="space-y-2">
+    <h2 class="text-sm font-semibold">AI provider (optional)</h2>
+    <p class="text-xs text-[var(--color-muted)]">
+      Powers the per-project retrospective (Stage 2). Entirely optional — the project rollup works
+      without it. Your settings live on this machine, never in the record repo; an Anthropic key is
+      stored in the OS keyring, never in a file.
+    </p>
+    <div class="flex flex-wrap items-end gap-2">
+      <label class="flex flex-col text-xs text-[var(--color-muted)]">
+        Provider
+        <select
+          bind:value={provider}
+          onchange={onProviderChange}
+          class="mt-0.5 rounded border border-[var(--color-line)] px-2 py-1.5 text-sm"
+        >
+          <option value="ollama">Ollama (local)</option>
+          <option value="anthropic">Anthropic</option>
+        </select>
+      </label>
+      <label class="flex flex-col text-xs text-[var(--color-muted)]">
+        Model
+        <input
+          bind:value={model}
+          class="mt-0.5 rounded border border-[var(--color-line)] px-2 py-1.5 text-sm"
+        />
+      </label>
+      {#if provider === 'ollama'}
+        <label class="flex flex-col text-xs text-[var(--color-muted)]">
+          Base URL
+          <input
+            bind:value={baseUrl}
+            class="mt-0.5 w-56 rounded border border-[var(--color-line)] px-2 py-1.5 text-sm"
+          />
+        </label>
+      {/if}
+      <button
+        class="rounded border border-[var(--color-line)] px-3 py-1.5 text-sm hover:bg-gray-50"
+        disabled={app.busy}
+        onclick={saveLlm}
+      >
+        Save provider
+      </button>
+    </div>
+
+    {#if provider === 'anthropic'}
+      <div class="flex flex-wrap items-end gap-2">
+        <label class="flex flex-col text-xs text-[var(--color-muted)]">
+          Anthropic API key (stored in keyring)
+          <input
+            type="password"
+            bind:value={anthropicKey}
+            placeholder="sk-ant-…"
+            class="mt-0.5 w-64 rounded border border-[var(--color-line)] px-2 py-1.5 text-sm"
+          />
+        </label>
+        <button
+          class="rounded border border-[var(--color-line)] px-3 py-1.5 text-sm hover:bg-gray-50"
+          disabled={app.busy || !anthropicKey.trim()}
+          onclick={saveKey}
+        >
+          Save key
+        </button>
+      </div>
+    {/if}
+
+    <div class="flex items-center gap-2">
+      <button
+        class="rounded bg-[var(--color-accent)] px-3 py-1.5 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
+        disabled={app.busy || !app.llmReady}
+        onclick={() => app.testLlm()}
+      >
+        Test connection
+      </button>
+      <span class="text-xs text-[var(--color-muted)]">
+        {#if app.llmReady}
+          Ready · {app.llmConfig?.provider} ({app.llmConfig?.model})
+        {:else if app.llmConfig}
+          Saved, but not ready (key missing or no platform support)
+        {:else}
+          No provider configured
+        {/if}
+      </span>
+    </div>
   </section>
 
   <section class="space-y-2">

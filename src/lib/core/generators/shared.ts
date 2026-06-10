@@ -8,10 +8,19 @@
  */
 
 import type { Entry } from '../types';
+import { stripMarkedBlock } from '../reduce/markers';
 
-/** Drop every private entry. The single chokepoint for the §7 guarantee. */
+/**
+ * Drop every private entry, and strip every `whoami:reduce` region from the
+ * bodies that remain (ingest-reduce plan §4.5). The single chokepoint for both
+ * the §7 privacy guarantee and the rule that derived reductions never leak into
+ * outward artifacts — the reduction is a dashboard/self-knowledge artifact, not
+ * resume/site content.
+ */
 export function publicEntries(entries: Entry[]): Entry[] {
-  return entries.filter((e) => e.frontmatter.private !== true);
+  return entries
+    .filter((e) => e.frontmatter.private !== true)
+    .map((e) => ({ ...e, body: stripMarkedBlock(e.body) }));
 }
 
 /** Group entries by their `type`, preserving input order within each group. */

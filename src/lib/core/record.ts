@@ -17,11 +17,15 @@ import {
   reindexFile,
   removeByPath,
   listEntries as dbListEntries,
+  listProjects as dbListProjects,
   getEntryById,
+  findBySource as dbFindBySource,
+  sourceIds as dbSourceIds,
   countsByType,
   allTags,
   getMeta,
   type ListFilters,
+  type ProjectSummary,
   type RebuildReport
 } from './index-db';
 import {
@@ -32,6 +36,18 @@ import {
   touchEntry,
   type NewEntryInput
 } from './entry';
+import {
+  rollupEntries,
+  runReducePipeline,
+  renderRetrospective,
+  upsertMarkedBlock,
+  extractMarkedBlock,
+  stripMarkedBlock,
+  type ProjectRollup,
+  type RollupOptions,
+  type ReduceProposal
+} from './reduce';
+import type { Llm } from './types';
 import { emptyProfile, parseProfile, PROFILE_PATH, serializeProfile } from './profile';
 import {
   PROFILE_BODY_PLACEHOLDER,
@@ -43,7 +59,46 @@ import { generateResumeMarkdown } from './generators/resume';
 import { generateSiteHtml } from './generators/site';
 
 // Re-export the index types the UI consumes through the facade.
-export type { ListFilters, RebuildReport };
+export type { ListFilters, ProjectSummary, RebuildReport, ReduceProposal };
+
+/** Frontmatter the human can set/override at the promote gate (plan §2.4). */
+export interface PromoteOverrides {
+  /** Project slug to affiliate the entry with. An empty string clears any
+   * suggested affiliation; `undefined` leaves the candidate's value untouched. */
+  project?: string;
+}
+
+/** The candidate inbox (ingest-reduce plan §1): staged-but-unreviewed ingested
+ * items. Lives inside the record folder for locality but is gitignored — a
+ * candidate is NOT part of the record until promoted. */
+export const INBOX_DIR = '.inbox';
+const REJECTED_FILE = `${INBOX_DIR}/rejected.tsv`;
+
+/** Stable dedupe key for a (source, source_id) pair. */
+export function provenanceKey(source: string, sourceId: string): string {
+  return `${source}\t${sourceId}`;
+}
+
+/** Tiny non-crypto hash for collision-proofing candidate filenames. */
+function hash8(input: string): string {
+  let h = 5381;
+  for (let i = 0; i < input.length; i++) h = ((h << 5) + h + input.charCodeAt(i)) >>> 0;
+  return h.toString(16).padStart(8, '0');
+}
+
+/** Deterministic candidate filename from provenance, so re-staging the same
+ * item overwrites its own file instead of accumulating duplicates. */
+function candidateFilename(entry: Entry): string {
+  const fm = entry.frontmatter;
+  const source = typeof fm.source === 'string' && fm.source ? fm.source : 'manual';
+  const sourceId = typeof fm.source_id === 'string' && fm.source_id ? fm.source_id : fm.id;
+  const safe =
+    sourceId
+      .replace(/[^a-zA-Z0-9._-]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 60) || 'item';
+  return `${source}-${safe}-${hash8(`${source}\t${sourceId}`)}.md`;
+}
 
 export class RecordStore {
   constructor(
@@ -146,6 +201,114 @@ export class RecordStore {
   }
 
   // -------------------------------------------------------------------------
+  // Candidate inbox (ingest-reduce plan §1) — staged, not yet record.
+  //
+  // The hard rule: ingestion never writes a canonical entry directly. Items
+  // land here as candidate files; only the human's promote turns one into a
+  // real `entries/*.md` (text first, then index — the same write order as
+  // every other path). Reject remembers the provenance so re-running an
+  // adapter never re-proposes the same item.
+  // -------------------------------------------------------------------------
+
+  /** All staged candidates, oldest filename first. */
+  async listCandidates(): Promise<Entry[]> {
+    const names = (await this.platform.fs.readDir(this.abs(INBOX_DIR)))
+      .filter((n) => n.endsWith('.md'))
+      .sort();
+    const out: Entry[] = [];
+    for (const name of names) {
+      const rel = `${INBOX_DIR}/${name}`;
+      out.push(parseEntry(await this.platform.fs.readTextFile(this.abs(rel)), rel));
+    }
+    return out;
+  }
+
+  /** Write a candidate file into the inbox. Deterministic filename per
+   * (source, source_id), so re-staging the same item is idempotent. The entry
+   * is stored in full canonical entry format — promote is then just a move. */
+  async stageCandidate(entry: Entry): Promise<Entry> {
+    await this.platform.fs.mkdir(this.abs(INBOX_DIR));
+    const rel = `${INBOX_DIR}/${candidateFilename(entry)}`;
+    await this.platform.fs.writeTextFile(this.abs(rel), serializeEntry(entry));
+    return { ...entry, path: rel };
+  }
+
+  /**
+   * Promote a candidate into the record: apply any review overrides (the
+   * project picker, plan §2.4), mark it reviewed, write it to its canonical
+   * `entries/` path (preserving the ULID minted at stage time), remove the
+   * inbox file, and reindex. This is the human commit gate.
+   */
+  async promoteCandidate(
+    candidatePath: string,
+    overrides: PromoteOverrides = {}
+  ): Promise<Entry> {
+    const candidate = await this.readEntryFile(candidatePath);
+    const fm = { ...candidate.frontmatter, reviewed: true };
+    if (overrides.project !== undefined) {
+      const project = overrides.project.trim();
+      if (project) fm.project = project;
+      else delete fm.project;
+    }
+    const next = touchEntry({ ...candidate, frontmatter: fm });
+    const newPath = expectedPath(next);
+    await this.writeEntryFile({ ...next, path: newPath });
+    await this.platform.fs.removeFile(this.abs(candidatePath));
+    await reindexFile(this.platform, this.recordRoot, newPath);
+    return { ...next, path: newPath };
+  }
+
+  /** Reject a candidate: remember its provenance (so it is never re-proposed)
+   * and delete the file. Nothing enters the record or the index. */
+  async rejectCandidate(candidatePath: string): Promise<void> {
+    let entry: Entry | null = null;
+    try {
+      entry = await this.readEntryFile(candidatePath);
+    } catch {
+      /* unreadable candidate — still remove it below */
+    }
+    if (entry) {
+      const src = entry.frontmatter.source;
+      const sid = entry.frontmatter.source_id;
+      if (typeof src === 'string' && src && typeof sid === 'string' && sid) {
+        await this.appendRejected(src, sid);
+      }
+    }
+    await this.platform.fs.removeFile(this.abs(candidatePath));
+  }
+
+  /** Provenance keys (`source\tsource_id`) of every rejected item. */
+  async rejectedKeys(): Promise<Set<string>> {
+    const { fs } = this.platform;
+    const abs = this.abs(REJECTED_FILE);
+    if (!(await fs.exists(abs))) return new Set();
+    const text = await fs.readTextFile(abs);
+    return new Set(text.split('\n').map((l) => l.trim()).filter(Boolean));
+  }
+
+  private async appendRejected(source: string, sourceId: string): Promise<void> {
+    const { fs } = this.platform;
+    await fs.mkdir(this.abs(INBOX_DIR));
+    const abs = this.abs(REJECTED_FILE);
+    const existing = (await fs.exists(abs)) ? await fs.readTextFile(abs) : '';
+    const key = provenanceKey(source, sourceId);
+    const keys = new Set(existing.split('\n').map((l) => l.trim()).filter(Boolean));
+    if (keys.has(key)) return;
+    const next = existing && !existing.endsWith('\n') ? `${existing}\n${key}\n` : `${existing}${key}\n`;
+    await fs.writeTextFile(abs, next);
+  }
+
+  /** The entry id already carrying a (source, source_id), or null (dedupe). */
+  findBySource(source: string, sourceId: string): Promise<string | null> {
+    return dbFindBySource(this.platform.db, source, sourceId);
+  }
+
+  /** All promoted source_ids for one source (bulk dedupe). */
+  promotedSourceIds(source: string): Promise<Set<string>> {
+    return dbSourceIds(this.platform.db, source);
+  }
+
+  // -------------------------------------------------------------------------
   // Profile
   // -------------------------------------------------------------------------
 
@@ -165,6 +328,83 @@ export class RecordStore {
 
   listEntries(filters: ListFilters = {}): Promise<Entry[]> {
     return dbListEntries(this.platform.db, filters);
+  }
+
+  /** Every project entry with its affiliated-entry count (plan §2.3). Powers
+   * the project picker and the per-project filter. */
+  listProjects(includePrivate = false): Promise<ProjectSummary[]> {
+    return dbListProjects(this.platform.db, includePrivate);
+  }
+
+  /**
+   * Deterministic rollup over a project's affiliated entries (plan §4.2). The
+   * floor of Stage 2: needs no LLM. Includes private entries by default — the
+   * rollup serves the owner's project view; privacy is enforced where outputs
+   * are generated, not here.
+   */
+  async projectRollup(
+    slug: string,
+    opts: { includePrivate?: boolean } & RollupOptions = {}
+  ): Promise<ProjectRollup> {
+    const { includePrivate = true, ...rollupOpts } = opts;
+    const entries = await this.listEntries({ project: slug, includePrivate });
+    return rollupEntries(entries, rollupOpts);
+  }
+
+  /**
+   * Generate a per-project retrospective via the LLM map/reduce pipeline
+   * (plan §4.3–4.4). Returns a PROPOSAL only — nothing is written. The human's
+   * accept gate is {@link saveProjectReduction}. Every surviving fact's evidence
+   * resolves to a real entry ULID (unverifiable claims are dropped upstream).
+   */
+  async reduceProject(
+    llm: Llm,
+    slug: string,
+    opts: { tokenBudget?: number; maxTokens?: number; now?: string } = {}
+  ): Promise<ReduceProposal> {
+    const projects = await this.listProjects(true);
+    const summary = projects.find((p) => p.slug === slug);
+    if (!summary?.entry.path) throw new Error(`No project entry with slug "${slug}"`);
+
+    // Byte-exact body from disk so the diff/upsert preserve the human's prose.
+    const projectEntry = await this.readEntryFile(summary.entry.path);
+    const entries = (await this.listEntries({ project: slug, includePrivate: true })).sort((a, b) =>
+      String(a.frontmatter.date).localeCompare(String(b.frontmatter.date))
+    );
+
+    const retro = await runReducePipeline(llm, {
+      entries,
+      projectProse: stripMarkedBlock(projectEntry.body),
+      tokenBudget: opts.tokenBudget,
+      maxTokens: opts.maxTokens
+    });
+
+    const generated = opts.now ?? new Date().toISOString().slice(0, 10);
+    const inner = renderRetrospective(retro, { entryCount: entries.length, generated });
+    return {
+      slug,
+      projectEntryId: projectEntry.frontmatter.id,
+      entryCount: entries.length,
+      retro,
+      inner,
+      currentInner: extractMarkedBlock(projectEntry.body),
+      currentBody: projectEntry.body,
+      proposedBody: upsertMarkedBlock(projectEntry.body, inner)
+    };
+  }
+
+  /**
+   * The reduce accept gate (plan §4.4): upsert the rendered block into the
+   * project entry's marker region and persist via the normal write path (text
+   * first, `updated` bumped, single-file reindex). The body is re-read from disk
+   * first so any human edits to the prose since generation are preserved
+   * byte-for-byte outside the markers.
+   */
+  async saveProjectReduction(projectEntryId: string, inner: string): Promise<Entry> {
+    const indexed = await getEntryById(this.platform.db, projectEntryId);
+    if (!indexed?.path) throw new Error('project entry not found');
+    const fresh = await this.readEntryFile(indexed.path);
+    return this.updateEntry({ ...fresh, body: upsertMarkedBlock(fresh.body, inner) });
   }
 
   getEntry(id: string): Promise<Entry | null> {

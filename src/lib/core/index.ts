@@ -17,7 +17,13 @@ export type {
   Database,
   GitRunner,
   GitResult,
-  Row
+  Row,
+  Http,
+  HttpRequest,
+  HttpResponse,
+  Secrets,
+  Llm,
+  LlmCompletionRequest
 } from './types';
 export { ENTRY_TYPES } from './types';
 
@@ -53,16 +59,20 @@ export {
   reindexFile,
   removeByPath,
   listEntries,
+  listProjects,
   getEntryById,
+  findBySource,
+  sourceIds,
   countsByType,
   allTags,
   getMeta,
   SCHEMA_VERSION,
   type ListFilters,
+  type ProjectSummary,
   type RebuildReport
 } from './index-db';
 
-export { RecordStore } from './record';
+export { RecordStore, INBOX_DIR, provenanceKey, type PromoteOverrides } from './record';
 
 export {
   status as gitStatus,
@@ -76,3 +86,7 @@ export {
 
 export { generateResumeMarkdown, type ResumeInput, type ResumeOptions } from './generators/resume';
 export { generateSiteHtml, type SiteInput } from './generators/site';
+
+export * from './ingest';
+export * from './llm';
+export * from './reduce';

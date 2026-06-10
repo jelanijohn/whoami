@@ -13,18 +13,22 @@
 
 import type { Entry, EntryFrontmatter } from './types';
 import { orderKeys, parseFrontmatter, serializeFrontmatter } from './frontmatter';
-import { entryRelPath, isUlid, newId } from './ids';
+import { entryRelPath, isUlid, newId, slugify } from './ids';
 
-/** Canonical frontmatter key order for a diff-friendly file. */
+/** Canonical frontmatter key order for a diff-friendly file. `slug` sits next
+ * to identity (it only appears on project entries); `project` next to `tags` as
+ * the other cross-cutting affiliation key. */
 const ENTRY_KEY_ORDER = [
   'id',
   'type',
+  'slug',
   'date',
   'created',
   'updated',
   'title',
   'private',
-  'tags'
+  'tags',
+  'project'
 ] as const;
 
 /** Current wall-clock time as an ISO 8601 string. Injectable for tests. */
@@ -103,6 +107,12 @@ export function makeEntry(input: NewEntryInput, now: string = nowIso()): Entry {
     tags: input.tags ?? [],
     ...(input.extra ?? {})
   };
+  // A project entry needs a stable slug other entries point at (plan §2.1).
+  // An explicit slug (via `extra`) wins; otherwise derive one from the title.
+  // Only project entries carry a slug — for everything else it's meaningless.
+  if (frontmatter.type === 'project' && typeof frontmatter.slug !== 'string') {
+    frontmatter.slug = slugify(input.title);
+  }
   return {
     frontmatter,
     body: input.body ?? '',
