@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { createNodePlatform } from './platform-node';
 import { RecordStore } from './record';
 import { makeEntry } from './entry';
-import type { Platform } from './types';
+import type { Llm, LlmCompletionRequest, Platform } from './types';
 
 let root: string;
 let platform: Platform;
@@ -236,5 +236,155 @@ describe('project dimension (plan §2)', () => {
     const staged = await store.stageCandidate(candidate);
     const promoted = await store.promoteCandidate(staged.path!, { project: '' });
     expect(promoted.frontmatter.project).toBeUndefined();
+  });
+});
+
+/**
+ * A fake LLM (plan §4.3) that echoes back whatever entry ULIDs it sees in the
+ * prompt as evidence — plus one fact citing a fabricated ULID, to prove the
+ * evidence filter drops unverifiable claims. Map vs reduce is told apart by the
+ * `MAP_OUTPUTS` marker the reduce prompt carries.
+ */
+const GHOST_ULID = '01HZZZZZZZZZZZZZZZZZZZZZZZ';
+function fakeReduceLlm(): { llm: Llm; calls: LlmCompletionRequest[] } {
+  const calls: LlmCompletionRequest[] = [];
+  const ULID = /\b[0-7][0-9A-HJKMNP-TV-Z]{25}\b/g;
+  const llm: Llm = {
+    async complete(req) {
+      calls.push(req);
+      const ids = [...new Set(req.user.match(ULID) ?? [])].filter((id) => id !== GHOST_ULID);
+      if (req.user.includes('MAP_OUTPUTS')) {
+        return JSON.stringify({
+          worked_on: ids.length ? [{ text: 'Did the work', evidence: [ids[0]] }] : [],
+          successes: ids.length ? [{ text: 'Shipped it', evidence: ids }] : [],
+          failures: [],
+          lessons: [
+            ...(ids.length ? [{ text: 'Learned a lot', evidence: [ids[0]] }] : []),
+            { text: 'Hallucinated lesson', evidence: [GHOST_ULID] }
+          ]
+        });
+      }
+      return JSON.stringify({
+        worked_on: ids.map((id) => ({ text: `Touched ${id.slice(-4)}`, evidence: [id] })),
+        successes: [],
+        failures: [],
+        lessons: [{ text: 'Injected lesson', evidence: [GHOST_ULID] }]
+      });
+    }
+  };
+  return { llm, calls };
+}
+
+const countOf = (haystack: string, needle: string) => haystack.split(needle).length - 1;
+
+describe('reduce pipeline (plan §4)', () => {
+  it('produces a four-list retrospective whose every fact resolves to a real ULID', async () => {
+    const project = await store.createEntry({
+      type: 'project',
+      title: 'Who Am I',
+      extra: { slug: 'whoami' },
+      body: 'My own notes about the project.'
+    });
+    const e1 = await store.createEntry({
+      type: 'win',
+      title: 'Shipped ingest',
+      date: '2024-01-01',
+      extra: { project: 'whoami' }
+    });
+    const e2 = await store.createEntry({
+      type: 'journal',
+      title: 'Reduced things',
+      date: '2024-02-01',
+      extra: { project: 'whoami' }
+    });
+    const validIds = new Set([e1.frontmatter.id, e2.frontmatter.id]);
+
+    const { llm, calls } = fakeReduceLlm();
+    const proposal = await store.reduceProject(llm, 'whoami', { now: '2026-06-10' });
+
+    const allEvidence = [
+      ...proposal.retro.worked_on,
+      ...proposal.retro.successes,
+      ...proposal.retro.failures,
+      ...proposal.retro.lessons
+    ].flatMap((f) => f.evidence);
+    expect(allEvidence.length).toBeGreaterThan(0);
+    for (const id of allEvidence) expect(validIds.has(id)).toBe(true);
+    expect(allEvidence).not.toContain(GHOST_ULID);
+
+    // At least one map call + one reduce call.
+    expect(calls.length).toBeGreaterThanOrEqual(2);
+    // It's a proposal: nothing is written to disk yet.
+    const onDisk = await readFile(join(root, project.path!), 'utf8');
+    expect(onDisk).not.toContain('whoami:reduce');
+  });
+
+  it('save writes the region, preserves prose, and re-running regenerates in place', async () => {
+    await store.createEntry({
+      type: 'project',
+      title: 'Proj',
+      extra: { slug: 'proj' },
+      body: 'Human prose here.'
+    });
+    await store.createEntry({
+      type: 'win',
+      title: 'w',
+      date: '2024-01-01',
+      extra: { project: 'proj' }
+    });
+
+    const { llm } = fakeReduceLlm();
+    const p1 = await store.reduceProject(llm, 'proj', { now: '2026-06-10' });
+    const saved = await store.saveProjectReduction(p1.projectEntryId, p1.inner);
+    expect(saved.body).toContain('Human prose here.');
+    expect(saved.body).toContain('## Worked on');
+    expect(countOf(saved.body, 'whoami:reduce:start')).toBe(1);
+
+    const p2 = await store.reduceProject(llm, 'proj', { now: '2026-06-11' });
+    const saved2 = await store.saveProjectReduction(p2.projectEntryId, p2.inner);
+    expect(countOf(saved2.body, 'whoami:reduce:start')).toBe(1);
+    expect(countOf(saved2.body, 'whoami:reduce:end')).toBe(1);
+    expect(saved2.body).toContain('Human prose here.');
+    expect(saved2.body).toContain('2026-06-11');
+    expect(saved2.body).not.toContain('2026-06-10');
+  });
+
+  it('the resume/site generators exclude the reduce region (plan §4.5)', async () => {
+    const project = await store.createEntry({
+      type: 'project',
+      title: 'Public Proj',
+      private: false,
+      extra: { slug: 'pp' },
+      body: 'Visible prose.'
+    });
+    await store.createEntry({ type: 'win', title: 'w', date: '2024-01-01', extra: { project: 'pp' } });
+
+    const { llm } = fakeReduceLlm();
+    const p = await store.reduceProject(llm, 'pp', { now: '2026-06-10' });
+    const saved = await store.saveProjectReduction(p.projectEntryId, p.inner);
+    expect(saved.body).toContain('whoami:reduce'); // present in the record…
+
+    const md = await store.resumeMarkdown();
+    const html = await store.siteHtml();
+    expect(md).not.toContain('whoami:reduce'); // …but never in outputs
+    expect(md).not.toContain('Generated 2026-06-10');
+    expect(html).not.toContain('whoami:reduce');
+  });
+
+  it('fails visibly when no fact survives evidence verification', async () => {
+    await store.createEntry({ type: 'project', title: 'Empty', extra: { slug: 'empty' }, body: '' });
+    await store.createEntry({ type: 'win', title: 'w', date: '2024-01-01', extra: { project: 'empty' } });
+    // An LLM that only ever cites the ghost ULID → everything gets filtered out.
+    const llm: Llm = {
+      async complete() {
+        return JSON.stringify({
+          worked_on: [{ text: 'ghost', evidence: [GHOST_ULID] }],
+          successes: [],
+          failures: [],
+          lessons: []
+        });
+      }
+    };
+    await expect(store.reduceProject(llm, 'empty')).rejects.toThrow(/no verifiable facts/);
   });
 });

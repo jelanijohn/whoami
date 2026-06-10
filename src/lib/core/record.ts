@@ -36,7 +36,18 @@ import {
   touchEntry,
   type NewEntryInput
 } from './entry';
-import { rollupEntries, type ProjectRollup, type RollupOptions } from './reduce';
+import {
+  rollupEntries,
+  runReducePipeline,
+  renderRetrospective,
+  upsertMarkedBlock,
+  extractMarkedBlock,
+  stripMarkedBlock,
+  type ProjectRollup,
+  type RollupOptions,
+  type ReduceProposal
+} from './reduce';
+import type { Llm } from './types';
 import { emptyProfile, parseProfile, PROFILE_PATH, serializeProfile } from './profile';
 import {
   PROFILE_BODY_PLACEHOLDER,
@@ -48,7 +59,7 @@ import { generateResumeMarkdown } from './generators/resume';
 import { generateSiteHtml } from './generators/site';
 
 // Re-export the index types the UI consumes through the facade.
-export type { ListFilters, ProjectSummary, RebuildReport };
+export type { ListFilters, ProjectSummary, RebuildReport, ReduceProposal };
 
 /** Frontmatter the human can set/override at the promote gate (plan §2.4). */
 export interface PromoteOverrides {
@@ -338,6 +349,62 @@ export class RecordStore {
     const { includePrivate = true, ...rollupOpts } = opts;
     const entries = await this.listEntries({ project: slug, includePrivate });
     return rollupEntries(entries, rollupOpts);
+  }
+
+  /**
+   * Generate a per-project retrospective via the LLM map/reduce pipeline
+   * (plan §4.3–4.4). Returns a PROPOSAL only — nothing is written. The human's
+   * accept gate is {@link saveProjectReduction}. Every surviving fact's evidence
+   * resolves to a real entry ULID (unverifiable claims are dropped upstream).
+   */
+  async reduceProject(
+    llm: Llm,
+    slug: string,
+    opts: { tokenBudget?: number; maxTokens?: number; now?: string } = {}
+  ): Promise<ReduceProposal> {
+    const projects = await this.listProjects(true);
+    const summary = projects.find((p) => p.slug === slug);
+    if (!summary?.entry.path) throw new Error(`No project entry with slug "${slug}"`);
+
+    // Byte-exact body from disk so the diff/upsert preserve the human's prose.
+    const projectEntry = await this.readEntryFile(summary.entry.path);
+    const entries = (await this.listEntries({ project: slug, includePrivate: true })).sort((a, b) =>
+      String(a.frontmatter.date).localeCompare(String(b.frontmatter.date))
+    );
+
+    const retro = await runReducePipeline(llm, {
+      entries,
+      projectProse: stripMarkedBlock(projectEntry.body),
+      tokenBudget: opts.tokenBudget,
+      maxTokens: opts.maxTokens
+    });
+
+    const generated = opts.now ?? new Date().toISOString().slice(0, 10);
+    const inner = renderRetrospective(retro, { entryCount: entries.length, generated });
+    return {
+      slug,
+      projectEntryId: projectEntry.frontmatter.id,
+      entryCount: entries.length,
+      retro,
+      inner,
+      currentInner: extractMarkedBlock(projectEntry.body),
+      currentBody: projectEntry.body,
+      proposedBody: upsertMarkedBlock(projectEntry.body, inner)
+    };
+  }
+
+  /**
+   * The reduce accept gate (plan §4.4): upsert the rendered block into the
+   * project entry's marker region and persist via the normal write path (text
+   * first, `updated` bumped, single-file reindex). The body is re-read from disk
+   * first so any human edits to the prose since generation are preserved
+   * byte-for-byte outside the markers.
+   */
+  async saveProjectReduction(projectEntryId: string, inner: string): Promise<Entry> {
+    const indexed = await getEntryById(this.platform.db, projectEntryId);
+    if (!indexed?.path) throw new Error('project entry not found');
+    const fresh = await this.readEntryFile(indexed.path);
+    return this.updateEntry({ ...fresh, body: upsertMarkedBlock(fresh.body, inner) });
   }
 
   getEntry(id: string): Promise<Entry | null> {

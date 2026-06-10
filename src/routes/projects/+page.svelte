@@ -1,19 +1,23 @@
 <script lang="ts">
   import { app } from '$lib/state.svelte';
-  import type { ProjectRollup } from '$lib/core';
+  import type { ProjectRollup, ReduceProposal } from '$lib/core';
 
   let selected = $state('');
   let rollup = $state<ProjectRollup | null>(null);
   let loading = $state(false);
+  let proposal = $state<ReduceProposal | null>(null);
+  let generating = $state(false);
 
   // Default the selection to the first project once they load.
   $effect(() => {
     if (!selected && app.projects.length) selected = app.projects[0].slug;
   });
 
-  // Recompute the rollup whenever the selected project changes.
+  // Recompute the rollup whenever the selected project changes; drop any
+  // pending proposal (it belonged to the previous project).
   $effect(() => {
     const slug = selected;
+    proposal = null;
     if (!slug || !app.store) {
       rollup = null;
       return;
@@ -30,6 +34,21 @@
   });
 
   const current = $derived(app.projects.find((p) => p.slug === selected) ?? null);
+
+  async function generate() {
+    generating = true;
+    try {
+      proposal = await app.generateRetrospective(selected);
+    } finally {
+      generating = false;
+    }
+  }
+
+  async function accept() {
+    if (!proposal) return;
+    await app.acceptRetrospective(proposal);
+    proposal = null;
+  }
 </script>
 
 <div class="space-y-4">
@@ -119,6 +138,58 @@
             </ul>
           </div>
         {/if}
+      {/if}
+    </section>
+
+    <!-- Retrospective (Stage 2 reduce) — LLM-assisted, human-gated. -->
+    <section class="space-y-3 rounded-lg border border-[var(--color-line)] bg-white p-4 shadow-sm">
+      <div class="flex flex-wrap items-center gap-2">
+        <h2 class="text-base font-semibold">Retrospective</h2>
+        <span class="text-xs text-[var(--color-muted)]">
+          LLM-assisted · every fact cites the entries it came from · nothing is saved until you accept
+        </span>
+        <button
+          class="ml-auto rounded bg-[var(--color-accent)] px-3 py-1.5 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
+          disabled={!app.llmReady || generating || app.busy || (rollup?.total ?? 0) === 0}
+          onclick={generate}
+        >
+          {generating ? 'Generating…' : 'Generate retrospective'}
+        </button>
+      </div>
+
+      {#if !app.llmReady}
+        <p class="text-sm text-[var(--color-muted)]">
+          No LLM provider configured. Set one in <a class="text-[var(--color-accent)] hover:underline" href="/data">Data → AI provider</a>
+          to draft a retrospective. The rollup above works without it.
+        </p>
+      {/if}
+
+      {#if proposal}
+        <div class="space-y-2">
+          <p class="text-xs text-[var(--color-muted)]">
+            Proposed from {proposal.entryCount}
+            {proposal.entryCount === 1 ? 'entry' : 'entries'}.
+            {proposal.currentInner ? 'This replaces the existing retrospective.' : ''}
+            Review below, then accept to write it into the project entry (outside-the-markers prose is
+            untouched).
+          </p>
+          <pre class="max-h-96 overflow-auto rounded border border-[var(--color-line)] bg-gray-50 p-3 text-xs whitespace-pre-wrap">{proposal.inner}</pre>
+          <div class="flex gap-2">
+            <button
+              class="rounded bg-[var(--color-accent)] px-3 py-1.5 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
+              disabled={app.busy}
+              onclick={accept}
+            >
+              Accept &amp; save
+            </button>
+            <button
+              class="rounded border border-[var(--color-line)] px-3 py-1.5 text-sm hover:bg-gray-50"
+              onclick={() => (proposal = null)}
+            >
+              Discard
+            </button>
+          </div>
+        </div>
       {/if}
     </section>
   {/if}

@@ -24,6 +24,7 @@ import {
   type ProjectRollup,
   type ProjectSummary,
   type RebuildReport,
+  type ReduceProposal,
   type SyncResult
 } from './core';
 import { createTauriPlatform } from './platform-tauri';
@@ -247,6 +248,28 @@ class AppState {
   /** Deterministic rollup for a project — works with no LLM configured. */
   projectRollup(slug: string): Promise<ProjectRollup | null> {
     return this.store ? this.store.projectRollup(slug) : Promise.resolve(null);
+  }
+
+  /** Generate a retrospective proposal (plan §4.3–4.4) — nothing is written
+   * until {@link acceptRetrospective}. */
+  generateRetrospective(slug: string): Promise<ReduceProposal | null> {
+    if (!this.store) return Promise.resolve(null);
+    return this.guard(async () => {
+      if (!this.llm) throw new Error('No LLM provider configured (set one in Data → AI provider)');
+      const proposal = await this.store!.reduceProject(this.llm, slug);
+      this.message = `Drafted a retrospective from ${proposal.entryCount} entries — review and accept`;
+      return proposal;
+    });
+  }
+
+  /** The accept gate: persist the proposed reduction into the project entry. */
+  async acceptRetrospective(proposal: ReduceProposal): Promise<void> {
+    if (!this.store) return;
+    await this.guard(async () => {
+      await this.store!.saveProjectReduction(proposal.projectEntryId, proposal.inner);
+      await this.refresh();
+      this.message = 'Saved the retrospective into the project entry';
+    });
   }
 
   // --- Profile --------------------------------------------------------------
