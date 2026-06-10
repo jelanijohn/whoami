@@ -7,12 +7,14 @@
  * app's source.
  */
 
-/** `.gitignore` for the record (data) repo — keeps the throwaway index and
- * generated outputs out of version control (spec §2). */
+/** `.gitignore` for the record (data) repo — keeps the throwaway index,
+ * generated outputs, and the ingestion candidate inbox out of version control
+ * (spec §2; ingest-reduce plan §1). */
 export const RECORD_GITIGNORE = `index.db
 index.db-wal
 index.db-shm
 dist/
+.inbox/
 .DS_Store
 Thumbs.db
 `;
@@ -46,6 +48,7 @@ delete the index any time and the app rebuilds it.
 - \`assets/\` — optional files/images referenced by entries.
 - \`templates/\` — optional resume / site templates.
 - \`dist/\` — generated resume / site outputs (gitignored, derived).
+- \`.inbox/\` — ingestion candidates awaiting review (gitignored, not yet record).
 - \`index.db\` — NOT here; lives in the app's data dir, per-machine, never synced.
 
 ## Daily workflow

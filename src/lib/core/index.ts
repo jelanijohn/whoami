@@ -17,7 +17,11 @@ export type {
   Database,
   GitRunner,
   GitResult,
-  Row
+  Row,
+  Http,
+  HttpRequest,
+  HttpResponse,
+  Secrets
 } from './types';
 export { ENTRY_TYPES } from './types';
 
@@ -54,6 +58,8 @@ export {
   removeByPath,
   listEntries,
   getEntryById,
+  findBySource,
+  sourceIds,
   countsByType,
   allTags,
   getMeta,
@@ -62,7 +68,7 @@ export {
   type RebuildReport
 } from './index-db';
 
-export { RecordStore } from './record';
+export { RecordStore, INBOX_DIR, provenanceKey } from './record';
 
 export {
   status as gitStatus,
@@ -76,3 +82,5 @@ export {
 
 export { generateResumeMarkdown, type ResumeInput, type ResumeOptions } from './generators/resume';
 export { generateSiteHtml, type SiteInput } from './generators/site';
+
+export * from './ingest';

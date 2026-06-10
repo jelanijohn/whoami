@@ -21,12 +21,17 @@ import {
   remove,
   writeTextFile
 } from '@tauri-apps/plugin-fs';
+import { appDataDir, join } from '@tauri-apps/api/path';
 import type {
   Database as CoreDatabase,
   FileSystem,
   GitRunner,
+  Http,
+  HttpRequest,
+  HttpResponse,
   Platform,
-  Row
+  Row,
+  Secrets
 } from './core';
 
 const fs: FileSystem = {
@@ -66,6 +71,73 @@ const git: GitRunner = {
     };
   }
 };
+
+/**
+ * Http seam via the webview's fetch. GitHub, Asana, and Google APIs all send
+ * CORS headers, so plain fetch works from the Tauri webview. If a future
+ * provider doesn't, upgrade this to @tauri-apps/plugin-http (same interface,
+ * no CORS constraint) — the seam means nothing else changes.
+ */
+const tauriHttp: Http = {
+  async request(req: HttpRequest): Promise<HttpResponse> {
+    const res = await fetch(req.url, {
+      method: req.method ?? 'GET',
+      headers: req.headers,
+      body: req.body
+    });
+    const headers: Record<string, string> = {};
+    res.headers.forEach((v, k) => {
+      headers[k.toLowerCase()] = v;
+    });
+    return { status: res.status, ok: res.ok, headers, text: await res.text() };
+  }
+};
+
+/**
+ * INTERIM Secrets implementation — plaintext JSON in the app-data dir
+ * (NEVER inside the record repo). Good enough to wire the UI; replace with a
+ * keyring-backed plugin (e.g. tauri-plugin-keyring) BEFORE storing real
+ * long-lived tokens. The Secrets seam makes that swap a one-file change.
+ */
+class FileSecrets implements Secrets {
+  private cache: Record<string, string> | null = null;
+
+  private async path(): Promise<string> {
+    return join(await appDataDir(), 'whoami-secrets.json');
+  }
+
+  private async load(): Promise<Record<string, string>> {
+    if (this.cache) return this.cache;
+    try {
+      const raw = await readTextFile(await this.path());
+      this.cache = JSON.parse(raw) as Record<string, string>;
+    } catch {
+      this.cache = {};
+    }
+    return this.cache;
+  }
+
+  private async persist(): Promise<void> {
+    await writeTextFile(await this.path(), JSON.stringify(this.cache ?? {}, null, 2));
+  }
+
+  async get(key: string): Promise<string | null> {
+    const m = await this.load();
+    return m[key] ?? null;
+  }
+
+  async set(key: string, value: string): Promise<void> {
+    const m = await this.load();
+    m[key] = value;
+    await this.persist();
+  }
+
+  async delete(key: string): Promise<void> {
+    const m = await this.load();
+    delete m[key];
+    await this.persist();
+  }
+}
 
 /** Split a multi-statement SQL script into individual statements. Our schema
  * SQL contains no semicolons inside string literals, so a naive split is safe.
@@ -140,5 +212,5 @@ function shortHash(input: string): string {
 export async function createTauriPlatform(recordRoot: string): Promise<Platform> {
   const dbName = `whoami-index-${shortHash(recordRoot)}.db`;
   const db = await TauriDatabase.open(dbName);
-  return { fs, db, git, hash: sha256, joinPath };
+  return { fs, db, git, hash: sha256, joinPath, http: tauriHttp, secrets: new FileSecrets() };
 }

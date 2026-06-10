@@ -130,6 +130,46 @@ export interface GitRunner {
   run(args: string[], cwd: string): Promise<GitResult>;
 }
 
+// ---------------------------------------------------------------------------
+// Ingestion seams (ingest-reduce plan §1, §3) — optional Platform capabilities.
+// ---------------------------------------------------------------------------
+
+/** A plain HTTP request. v1 adapters speak JSON-over-HTTPS only, so the body
+ * surface is text. */
+export interface HttpRequest {
+  url: string;
+  /** Defaults to GET. */
+  method?: string;
+  headers?: Record<string, string>;
+  body?: string;
+}
+
+/** The response, fully buffered. Adapters parse `text` as JSON themselves so
+ * the seam stays dumb and mockable. */
+export interface HttpResponse {
+  status: number;
+  ok: boolean;
+  headers: Record<string, string>;
+  text: string;
+}
+
+/** Minimal HTTP surface for ingestion adapters. Like waid's `provider/`
+ * module, everything above this seam is pure and network-agnostic: adapters
+ * receive a ready token and an {@link Http}, never a keyring or a socket.
+ * Implementations: node/webview `fetch`. */
+export interface Http {
+  request(req: HttpRequest): Promise<HttpResponse>;
+}
+
+/** Secret storage for provider tokens. Secrets MUST NEVER be written into the
+ * record repo or any entry frontmatter — only through this seam (mirrors
+ * waid's keyring discipline). Implementations: OS keyring / app-data store. */
+export interface Secrets {
+  get(key: string): Promise<string | null>;
+  set(key: string, value: string): Promise<void>;
+  delete(key: string): Promise<void>;
+}
+
 /**
  * The full platform bundle handed to the core. The Tauri app builds one from
  * its plugins; tests build one from node primitives.
@@ -143,4 +183,8 @@ export interface Platform {
   /** Join path segments with the platform separator. The core stays
    * separator-agnostic by routing all joins through here. */
   joinPath(...segments: string[]): string;
+  /** Optional — present when ingestion (Stage 1) is wired. Core features that
+   * need them must degrade with a clear message when absent. */
+  http?: Http;
+  secrets?: Secrets;
 }
