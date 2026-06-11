@@ -18,6 +18,12 @@
   const fm = $derived(candidate.frontmatter);
   const source = $derived(typeof fm.source === 'string' ? fm.source : '');
   const sourceUrl = $derived(typeof fm.source_url === 'string' ? fm.source_url : '');
+
+  // Triage signal (spec §6): a `frivolous` candidate shows a small muted badge
+  // with its reason and which stage decided. Absence ⇒ untriaged ⇒ shows normally.
+  const isFrivolous = $derived(fm.triage_signal === 'frivolous');
+  const triageReason = $derived(typeof fm.triage_reason === 'string' ? fm.triage_reason : '');
+  const triageBy = $derived(fm.triage_source === 'llm' ? 'model' : 'prefilter');
   const excerpt = $derived(
     candidate.body.length > 280 ? candidate.body.slice(0, 280).trimEnd() + '…' : candidate.body
   );
@@ -47,6 +53,14 @@
       <a href={sourceUrl} target="_blank" rel="noreferrer" class="text-xs text-[var(--color-accent)] hover:underline">
         source ↗
       </a>
+    {/if}
+    {#if isFrivolous}
+      <span
+        class="rounded bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-400/15 dark:text-amber-300"
+        title="Flagged as frivolous by the {triageBy}. Promote/reject are unchanged — this is only a sort hint."
+      >
+        frivolous{triageReason ? `: ${triageReason}` : ''} · {triageBy}
+      </span>
     {/if}
   </div>
 

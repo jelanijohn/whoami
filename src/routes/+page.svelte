@@ -90,7 +90,13 @@
         {#if editing && editing.frontmatter.id === entry.frontmatter.id}
           <EntryEditor {entry} ondone={done} />
         {:else}
-          <EntryCard {entry} onedit={startEdit} ondelete={remove} />
+          <EntryCard
+            {entry}
+            projects={app.projects}
+            onedit={startEdit}
+            ondelete={remove}
+            onassign={(e, slug) => app.setEntryProject(e, slug)}
+          />
         {/if}
       {/each}
     </div>

@@ -48,6 +48,8 @@ import {
   type ReduceProposal
 } from './reduce';
 import type { Llm } from './types';
+// Import from the leaf module (not the index) to avoid a triage→record cycle.
+import { TRIAGE_KEYS } from './triage/types';
 import { emptyProfile, parseProfile, PROFILE_PATH, serializeProfile } from './profile';
 import {
   PROFILE_BODY_PLACEHOLDER,
@@ -245,6 +247,9 @@ export class RecordStore {
   ): Promise<Entry> {
     const candidate = await this.readEntryFile(candidatePath);
     const fm = { ...candidate.frontmatter, reviewed: true };
+    // Triage signals are a review aid for the inbox, never a fact about the
+    // work — strip them so nothing reaches the record (triage spec §5, §6).
+    for (const k of TRIAGE_KEYS) delete (fm as Record<string, unknown>)[k];
     if (overrides.project !== undefined) {
       const project = overrides.project.trim();
       if (project) fm.project = project;

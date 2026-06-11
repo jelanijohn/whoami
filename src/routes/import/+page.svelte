@@ -1,5 +1,6 @@
 <script lang="ts">
   import { app, type LiveSource } from '$lib/state.svelte';
+  import { closeDatePicker } from '$lib/actions/closeDatePicker';
 
   // Transient token-entry boxes (the saved value lives in the keyring, never here).
   let tokens = $state<Record<LiveSource, string>>({ github: '', asana: '', gmail: '' });
@@ -22,13 +23,18 @@
   async function runGithub() {
     persist();
     const g = app.importSettings.github;
+    const capStr = g.discussionCharCap.trim();
+    const cap = capStr ? Number(capStr) : undefined;
     await app.importGithub({
       user: g.user.trim(),
       repo: g.repo.trim() || undefined,
       since: g.since || undefined,
       until: g.until || undefined,
       limit: g.limit || undefined,
-      baseUrl: g.baseUrl.trim() || undefined
+      baseUrl: g.baseUrl.trim() || undefined,
+      fetchDiscussion: g.fetchDiscussion,
+      commentScope: g.commentScope,
+      discussionCharCap: cap && Number.isFinite(cap) && cap > 0 ? cap : undefined
     });
   }
 
@@ -95,6 +101,37 @@
     </p>
   </section>
 
+  <!-- Triage (applies to every import) -->
+  <section class="space-y-2 border-t border-[var(--color-line)] pt-5">
+    <h2 class="text-sm font-semibold">Triage</h2>
+    <p class="text-xs text-[var(--color-muted)]">
+      A free, local prefilter always runs — it flags obvious noise (automated email, version-bump
+      PRs, routine chores) as <em>frivolous</em> so the inbox can surface real work first. It never
+      deletes anything; you still promote or reject every item yourself.
+    </p>
+    <label class="flex items-start gap-2 text-sm {app.llmReady ? '' : 'opacity-60'}">
+      <input
+        type="checkbox"
+        class="mt-0.5"
+        disabled={!app.llmReady}
+        bind:checked={app.importSettings.triage.useLlm}
+      />
+      <span>
+        Use LLM triage for ambiguous items
+        {#if app.llmConfig}(sends them to <strong>{app.llmConfig.provider}</strong>){/if}
+        {#if !app.llmReady}
+          <span class="text-[var(--color-muted)]">— configure a provider in Data → AI provider first</span>
+        {:else if app.llmConfig?.provider === 'anthropic'}
+          <span class="block text-xs text-amber-700 dark:text-amber-300">
+            Only items the prefilter can't decide are sent to Anthropic — content leaves your
+            machine. Gmail items are metadata-only (subject + 200-char snippet), so what could ever
+            leave is minimal.
+          </span>
+        {/if}
+      </span>
+    </label>
+  </section>
+
   <!-- GitHub -->
   <section class="space-y-2 border-t border-[var(--color-line)] pt-5">
     <h2 class="text-sm font-semibold">GitHub</h2>
@@ -114,16 +151,41 @@
       </label>
       <label class="flex flex-col text-xs text-[var(--color-muted)]">
         Since
-        <input type="date" bind:value={app.importSettings.github.since} class={inputCls} />
+        <input type="date" bind:value={app.importSettings.github.since} class={inputCls} use:closeDatePicker />
       </label>
       <label class="flex flex-col text-xs text-[var(--color-muted)]">
         Until
-        <input type="date" bind:value={app.importSettings.github.until} class={inputCls} />
+        <input type="date" bind:value={app.importSettings.github.until} class={inputCls} use:closeDatePicker />
       </label>
       <label class="flex flex-col text-xs text-[var(--color-muted)]">
         Limit
         <input type="number" min="1" max="300" bind:value={app.importSettings.github.limit} class="{inputCls} w-20" />
       </label>
+    </div>
+    <div class="flex flex-wrap items-end gap-4">
+      <label class="flex items-center gap-2 text-xs text-[var(--color-muted)]">
+        <input type="checkbox" bind:checked={app.importSettings.github.fetchDiscussion} />
+        Fetch PR/issue discussion
+      </label>
+      {#if app.importSettings.github.fetchDiscussion}
+        <label class="flex flex-col text-xs text-[var(--color-muted)]">
+          Comments
+          <select bind:value={app.importSettings.github.commentScope} class={inputCls}>
+            <option value="self">My comments</option>
+            <option value="all">Everyone's</option>
+          </select>
+        </label>
+        <label class="flex flex-col text-xs text-[var(--color-muted)]">
+          Discussion char cap
+          <input
+            type="number"
+            min="1"
+            placeholder="2000"
+            bind:value={app.importSettings.github.discussionCharCap}
+            class="{inputCls} w-24"
+          />
+        </label>
+      {/if}
     </div>
     <button class={runCls} disabled={app.busy || !app.importSettings.github.user.trim()} onclick={runGithub}>
       Run GitHub import

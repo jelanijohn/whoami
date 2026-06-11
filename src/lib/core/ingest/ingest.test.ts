@@ -7,7 +7,16 @@ import { RecordStore, provenanceKey } from '../record';
 import { findBySource } from '../index-db';
 import { RECORD_GITIGNORE } from '../templates';
 import type { Platform } from '../types';
-import { mapGithubIssue, githubSearchQuery, apiBase, repoFromApiUrl } from './github';
+import {
+  mapGithubIssue,
+  githubSearchQuery,
+  apiBase,
+  repoFromApiUrl,
+  selectDiscussion,
+  composeDiscussion,
+  fetchGithub
+} from './github';
+import type { Http, HttpRequest, HttpResponse } from '../types';
 import { mapAsanaTask } from './asana';
 import { mapGmailMessage, internalDateToIso, header } from './gmail';
 import {
@@ -81,6 +90,196 @@ describe('github adapter', () => {
     expect(apiBase('https://ghe.corp/')).toBe('https://ghe.corp/api/v3');
     expect(repoFromApiUrl('https://api.github.com/repos/acme/waid')).toBe('acme/waid');
     expect(repoFromApiUrl('https://api.github.com/nope')).toBeUndefined();
+  });
+
+  it('maps the description block when body is present (change A)', () => {
+    const item = mapGithubIssue({ ...GH_PR, body: '  Adds dispatch.\n\nNotes.  ' });
+    expect(item.body).toContain('State: merged.');
+    expect(item.body).toContain('--- Description ---\nAdds dispatch.\n\nNotes.');
+    // Trimmed, and never preceded by leftover whitespace.
+    expect(item.body!.endsWith('Notes.')).toBe(true);
+  });
+
+  it('omits the description block when body is absent or blank (unchanged)', () => {
+    expect(mapGithubIssue(GH_PR).body).not.toContain('--- Description ---');
+    expect(mapGithubIssue({ ...GH_PR, body: '   ' }).body).not.toContain('--- Description ---');
+  });
+});
+
+// --- GitHub discussion: selectDiscussion (pure, §4) -------------------------
+
+describe('selectDiscussion', () => {
+  const raw = {
+    issueComments: [
+      { user: { login: 'jelani' }, created_at: '2024-01-18T00:00:00Z', body: 'mine, later' },
+      { user: { login: 'Reviewer' }, created_at: '2024-01-16T00:00:00Z', body: 'theirs' },
+      { user: { login: 'jelani' }, created_at: '2024-01-15T00:00:00Z', body: '  ' } // empty → dropped
+    ],
+    reviewComments: [
+      { user: { login: 'JELANI' }, created_at: '2024-01-14T00:00:00Z', body: 'mine, first' }
+    ],
+    reviews: [
+      { user: { login: 'reviewer' }, submitted_at: '2024-01-17T00:00:00Z', body: 'review summary' },
+      { user: { login: 'reviewer' }, submitted_at: '2024-01-19T00:00:00Z', body: '' } // bare approval → dropped
+    ]
+  };
+
+  it("scope 'self' keeps only the user's non-empty comments, case-insensitive", () => {
+    const out = selectDiscussion(raw, 'self', 'jelani');
+    expect(out.map((e) => e.body)).toEqual(['mine, first', 'mine, later']); // ascending date
+  });
+
+  it("scope 'all' keeps everyone, drops empties, sorts ascending, undated last", () => {
+    const withUndated = {
+      ...raw,
+      issueComments: [...raw.issueComments, { user: { login: 'x' }, body: 'no date' }]
+    };
+    const out = selectDiscussion(withUndated, 'all', 'jelani');
+    expect(out.map((e) => e.body)).toEqual([
+      'mine, first', // 01-14
+      'theirs', // 01-16
+      'review summary', // 01-17
+      'mine, later', // 01-18
+      'no date' // undated → last
+    ]);
+    expect(out.at(-1)?.date).toBeUndefined();
+  });
+});
+
+// --- GitHub discussion: composeDiscussion (pure, §5) ------------------------
+
+describe('composeDiscussion', () => {
+  const entries = [
+    { author: 'jelani', date: '2024-01-16', body: 'first' },
+    { author: 'jelani', date: undefined, body: 'second' }
+  ];
+
+  it('renders self vs all line formats', () => {
+    expect(composeDiscussion(entries, 'self', 2000)).toBe('[2024-01-16] first\n\n[????-??-??] second');
+    expect(composeDiscussion(entries, 'all', 2000)).toBe(
+      '[2024-01-16 @jelani] first\n\n[????-??-?? @jelani] second'
+    );
+  });
+
+  it('returns empty string for no entries', () => {
+    expect(composeDiscussion([], 'self', 2000)).toBe('');
+  });
+
+  it('leaves under-cap output unchanged', () => {
+    const out = composeDiscussion(entries, 'self', 2000);
+    expect(out).not.toContain('truncated');
+  });
+
+  it('truncates over-cap at a newline with the exact marker, never exceeding cap', () => {
+    const many = Array.from({ length: 50 }, (_, i) => ({
+      author: 'jelani',
+      date: '2024-01-16',
+      body: `comment number ${i}`
+    }));
+    const cap = 100;
+    const out = composeDiscussion(many, 'self', cap);
+    expect(out).toContain(`… [discussion truncated at ${cap} chars]`);
+    const marker = '\n… [discussion truncated at';
+    const head = out.slice(0, out.indexOf(marker));
+    expect(head.length).toBeLessThanOrEqual(cap);
+    // The kept head is a verbatim prefix of the full composition (no mangling).
+    const full = composeDiscussion(many, 'self', 1_000_000);
+    expect(full.startsWith(head)).toBe(true);
+  });
+});
+
+// --- GitHub discussion: fetchGithub fetch path (fake Http, §3) --------------
+
+/** Route a fake Http by URL substring → canned JSON (or a thrown 500). */
+function fakeHttp(routes: Array<{ match: string; json?: unknown; status?: number }>): Http {
+  return {
+    async request(req: HttpRequest): Promise<HttpResponse> {
+      const route = routes.find((r) => req.url.includes(r.match));
+      if (!route) return { status: 404, ok: false, headers: {}, text: 'no route' };
+      if (route.status && route.status >= 400) {
+        return { status: route.status, ok: false, headers: {}, text: 'boom' };
+      }
+      return { status: 200, ok: true, headers: {}, text: JSON.stringify(route.json) };
+    }
+  };
+}
+
+describe('fetchGithub with fetchDiscussion', () => {
+  const searchItem = {
+    id: 12,
+    number: 12,
+    title: 'Add dispatch',
+    html_url: 'https://github.com/acme/waid/pull/12',
+    state: 'closed',
+    created_at: '2024-01-15T00:00:00Z',
+    closed_at: '2024-02-01T00:00:00Z',
+    body: 'Adds dispatch.',
+    repository_url: 'https://api.github.com/repos/acme/waid',
+    pull_request: { url: 'https://api.github.com/repos/acme/waid/pulls/12', merged_at: '2024-02-01T00:00:00Z' }
+  };
+
+  it('appends description + self discussion from the three endpoints', async () => {
+    const http = fakeHttp([
+      { match: '/search/issues', json: { items: [searchItem] } },
+      {
+        match: '/issues/12/comments',
+        json: [{ user: { login: 'jelani' }, created_at: '2024-01-16T00:00:00Z', body: 'mine' }]
+      },
+      {
+        match: '/pulls/12/comments',
+        json: [{ user: { login: 'other' }, created_at: '2024-01-17T00:00:00Z', body: 'not mine' }]
+      },
+      {
+        match: '/pulls/12/reviews',
+        json: [{ user: { login: 'jelani' }, submitted_at: '2024-01-18T00:00:00Z', body: 'lgtm after fix' }]
+      }
+    ]);
+    const items = await fetchGithub(http, { token: 't', user: 'jelani', fetchDiscussion: true });
+    expect(items).toHaveLength(1);
+    const body = items[0].body!;
+    expect(body).toContain('--- Description ---\nAdds dispatch.');
+    expect(body).toContain('--- Discussion ---');
+    expect(body).toContain('[2024-01-16] mine');
+    expect(body).toContain('[2024-01-18] lgtm after fix');
+    expect(body).not.toContain('not mine'); // scope 'self' filters out others
+  });
+
+  it('keeps the description and completes when a discussion endpoint fails (per-item resilience)', async () => {
+    const http = fakeHttp([
+      { match: '/search/issues', json: { items: [searchItem] } },
+      { match: '/issues/12/comments', status: 500 }
+    ]);
+    const items = await fetchGithub(http, { token: 't', user: 'jelani', fetchDiscussion: true });
+    expect(items).toHaveLength(1);
+    expect(items[0].body).toContain('--- Description ---\nAdds dispatch.');
+    expect(items[0].body).not.toContain('--- Discussion ---');
+  });
+
+  it('skips pulls/* endpoints for a non-PR issue', async () => {
+    const issueItem = {
+      id: 7,
+      number: 7,
+      title: 'a bug',
+      html_url: 'https://github.com/acme/waid/issues/7',
+      state: 'open',
+      created_at: '2024-01-10T00:00:00Z',
+      body: 'broken',
+      repository_url: 'https://api.github.com/repos/acme/waid'
+    };
+    const calls: string[] = [];
+    const http: Http = {
+      async request(req) {
+        calls.push(req.url);
+        const text = req.url.includes('/search/issues')
+          ? JSON.stringify({ items: [issueItem] })
+          : JSON.stringify([{ user: { login: 'jelani' }, created_at: '2024-01-11T00:00:00Z', body: 'note' }]);
+        return { status: 200, ok: true, headers: {}, text };
+      }
+    };
+    const items = await fetchGithub(http, { token: 't', user: 'jelani', fetchDiscussion: true });
+    expect(items[0].body).toContain('[2024-01-11] note');
+    expect(calls.some((u) => u.includes('/pulls/'))).toBe(false);
+    expect(calls.some((u) => u.includes('/issues/7/comments'))).toBe(true);
   });
 });
 

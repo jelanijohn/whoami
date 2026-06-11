@@ -47,4 +47,4 @@ export {
   mapLinkedinEducation,
   importLinkedinArchive
 } from './linkedin';
-export { rawItemToEntryInput, stageItems } from './pipeline';
+export { rawItemToEntryInput, stageItems, selectNewItems } from './pipeline';

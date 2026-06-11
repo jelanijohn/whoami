@@ -1,6 +1,7 @@
 <script lang="ts">
   import { app } from '$lib/state.svelte';
   import { ENTRY_TYPES, type Entry } from '$lib/core';
+  import { closeDatePicker } from '$lib/actions/closeDatePicker';
 
   let { entry = null, ondone }: { entry?: Entry | null; ondone: () => void } = $props();
 
@@ -22,11 +23,15 @@
     Array.isArray(fm?.links) ? (fm!.links as string[]).join('\n') : s('links')
   );
   let body = $state(entry?.body ?? '');
+  // Affiliation: the `slug` of the project entry this belongs to. Empty = none.
+  let project = $state(s('project'));
 
   const showOrg = $derived(['role', 'project', 'win', 'education'].includes(type));
   const showRole = $derived(type === 'role');
   const showMention = $derived(type === 'mention');
   const showLinks = $derived(['project', 'role', 'mention', 'milestone'].includes(type));
+  // A project entry carries its own `slug`; it doesn't affiliate to a project.
+  const showProject = $derived(type !== 'project');
 
   function parseTags(text: string): string[] {
     return text
@@ -53,6 +58,7 @@
       const links = parseLinks(linksText);
       if (links.length) extra.links = links;
     }
+    if (showProject && project) extra.project = project;
     return extra;
   }
 
@@ -84,6 +90,9 @@
         },
         body
       };
+      // `buildExtra` only ever *adds* `project`. When the picker is shown but
+      // left empty, explicitly clear any prior affiliation.
+      if (showProject && !project) delete next.frontmatter.project;
       await app.updateEntry(next);
     }
     if (!app.error) ondone();
@@ -102,7 +111,7 @@
     </label>
     <label class="flex flex-col text-xs font-medium text-[var(--color-muted)]">
       Date
-      <input type="date" bind:value={date} class="mt-1 rounded border border-[var(--color-line)] px-2 py-1 text-sm" />
+      <input type="date" bind:value={date} class="mt-1 rounded border border-[var(--color-line)] px-2 py-1 text-sm" use:closeDatePicker />
     </label>
     <label class="mt-5 flex items-center gap-2 text-sm text-[var(--color-private)]">
       <input type="checkbox" bind:checked={isPrivate} />
@@ -157,6 +166,21 @@
     <label class="flex flex-col text-xs font-medium text-[var(--color-muted)]">
       Links (one per line)
       <textarea bind:value={linksText} rows="2" class="mt-1 rounded border border-[var(--color-line)] px-2 py-1 text-sm"></textarea>
+    </label>
+  {/if}
+
+  {#if showProject && (app.projects.length || project)}
+    <label class="flex flex-col text-xs font-medium text-[var(--color-muted)]">
+      Project
+      <select bind:value={project} class="mt-1 rounded border border-[var(--color-line)] px-2 py-1 text-sm">
+        <option value="">— none —</option>
+        {#each app.projects as p (p.slug)}
+          <option value={p.slug}>{p.entry.frontmatter.title}</option>
+        {/each}
+        {#if project && !app.projects.some((p) => p.slug === project)}
+          <option value={project}>{project} (not listed)</option>
+        {/if}
+      </select>
     </label>
   {/if}
 

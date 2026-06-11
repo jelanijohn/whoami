@@ -1,10 +1,12 @@
 <script lang="ts">
-  import type { Entry } from '$lib/core';
+  import type { Entry, ProjectSummary } from '$lib/core';
 
-  let { entry, onedit, ondelete }: {
+  let { entry, projects = [], onedit, ondelete, onassign }: {
     entry: Entry;
+    projects?: ProjectSummary[];
     onedit: (e: Entry) => void;
     ondelete: (e: Entry) => void;
+    onassign?: (e: Entry, slug: string) => void;
   } = $props();
 
   const fm = $derived(entry.frontmatter);
@@ -13,6 +15,10 @@
     entry.body.length > 240 ? entry.body.slice(0, 240).trimEnd() + '…' : entry.body
   );
   const org = $derived(typeof fm.org === 'string' ? fm.org : '');
+  // Current affiliation (a project slug), or '' when unfiled. Drives the
+  // quick-assign picker below; a project entry has its own slug, not this.
+  const project = $derived(typeof fm.project === 'string' ? fm.project : '');
+  const canAssign = $derived(!!onassign && fm.type !== 'project' && (projects.length > 0 || !!project));
 </script>
 
 <article class="rounded-lg border border-[var(--color-line)] bg-white p-4 shadow-sm dark:bg-[#1e1f24] dark:shadow-none">
@@ -53,6 +59,26 @@
       {#each tags as tag (tag)}
         <span class="rounded bg-gray-100 px-1.5 py-0.5 text-xs text-[var(--color-muted)] dark:bg-white/10">#{tag}</span>
       {/each}
+    </div>
+  {/if}
+
+  {#if canAssign}
+    <div class="mt-3 flex items-center gap-2 border-t border-[var(--color-line)] pt-2">
+      <label class="text-xs text-[var(--color-muted)]" for="assign-{fm.id}">Project</label>
+      <select
+        id="assign-{fm.id}"
+        class="rounded border border-[var(--color-line)] px-2 py-1 text-xs"
+        value={project}
+        onchange={(e) => onassign?.(entry, (e.currentTarget as HTMLSelectElement).value)}
+      >
+        <option value="">— none —</option>
+        {#each projects as p (p.slug)}
+          <option value={p.slug}>{p.entry.frontmatter.title}</option>
+        {/each}
+        {#if project && !projects.some((p) => p.slug === project)}
+          <option value={project}>{project} (not listed)</option>
+        {/if}
+      </select>
     </div>
   {/if}
 </article>

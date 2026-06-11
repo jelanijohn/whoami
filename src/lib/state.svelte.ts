@@ -22,6 +22,10 @@ import {
   validateGmail,
   importLinkedinArchive,
   stageItems,
+  selectNewItems,
+  triageItems,
+  DEFAULT_RUBRIC,
+  type TriageRubric,
   GITHUB_TOKEN_NAME,
   ASANA_TOKEN_NAME,
   GMAIL_TOKEN_NAME,
@@ -64,15 +68,41 @@ const TOKEN_NAMES: Record<LiveSource, string> = {
 /** Non-secret import parameters, persisted on this machine (outside the record,
  * like {@link LlmConfig}). Tokens are NOT here — they live in the keyring. */
 export interface ImportSettings {
-  github: { user: string; repo: string; since: string; until: string; limit: number; baseUrl: string };
+  github: {
+    user: string;
+    repo: string;
+    since: string;
+    until: string;
+    limit: number;
+    baseUrl: string;
+    /** Fetch PR/issue discussion in addition to the description (spec §1). */
+    fetchDiscussion: boolean;
+    commentScope: 'self' | 'all';
+    /** Blank ⇒ omit ⇒ adapter default (2000). Stored as a string for the input. */
+    discussionCharCap: string;
+  };
   asana: { workspace: string; completedSince: string; limit: number };
   gmail: { query: string; limit: number };
+  /** Triage settings (spec §6): the per-import LLM flag (off by default) plus
+   * optional rubric overrides. Persisted here (localStorage), never the record. */
+  triage: { useLlm: boolean; rubric?: Partial<TriageRubric> };
 }
 
 export const DEFAULT_IMPORT_SETTINGS: ImportSettings = {
-  github: { user: '', repo: '', since: '', until: '', limit: 50, baseUrl: '' },
+  github: {
+    user: '',
+    repo: '',
+    since: '',
+    until: '',
+    limit: 50,
+    baseUrl: '',
+    fetchDiscussion: false,
+    commentScope: 'self',
+    discussionCharCap: ''
+  },
   asana: { workspace: '', completedSince: '', limit: 50 },
-  gmail: { query: '', limit: 25 }
+  gmail: { query: '', limit: 25 },
+  triage: { useLlm: false }
 };
 
 class AppState {
@@ -131,7 +161,8 @@ class AppState {
           this.importSettings = {
             github: { ...DEFAULT_IMPORT_SETTINGS.github, ...p.github },
             asana: { ...DEFAULT_IMPORT_SETTINGS.asana, ...p.asana },
-            gmail: { ...DEFAULT_IMPORT_SETTINGS.gmail, ...p.gmail }
+            gmail: { ...DEFAULT_IMPORT_SETTINGS.gmail, ...p.gmail },
+            triage: { ...DEFAULT_IMPORT_SETTINGS.triage, ...p.triage }
           };
         } catch {
           /* ignore a corrupt setting */
@@ -231,6 +262,28 @@ class AppState {
     });
   }
 
+  /** Assign an existing entry to a project (or clear it with an empty slug),
+   * for filing old entries from the timeline. Goes through the normal write
+   * path: text first (with `project` set/removed), then a single-file reindex. */
+  async setEntryProject(entry: Entry, slug: string): Promise<Entry | null> {
+    if (!this.store) return null;
+    const project = slug.trim();
+    if ((typeof entry.frontmatter.project === 'string' ? entry.frontmatter.project : '') === project) {
+      return entry; // no-op: already affiliated as requested
+    }
+    const frontmatter = { ...entry.frontmatter };
+    if (project) frontmatter.project = project;
+    else delete frontmatter.project;
+    return this.guard(async () => {
+      const e = await this.store!.updateEntry({ ...entry, frontmatter });
+      await this.refresh();
+      this.message = project
+        ? `Filed “${e.frontmatter.title}” under ${project}`
+        : `Cleared project on “${e.frontmatter.title}”`;
+      return e;
+    });
+  }
+
   // --- Candidate inbox (ingest review, plan §1–2) ---------------------------
 
   /** Load the staged candidates awaiting review. */
@@ -318,12 +371,35 @@ class AppState {
     });
   }
 
-  /** Shared run path: pull the token, fetch via the adapter, stage candidates,
-   * reload the inbox. Stays behind the Stage-1 boundary — fetch + stage only,
-   * never a write into `entries/` and never an LLM call. */
+  /** The effective triage rubric: shipped defaults overlaid with any owner
+   * overrides persisted in `importSettings` (never the record repo, spec §5). */
+  private triageRubric(): TriageRubric {
+    return { ...DEFAULT_RUBRIC, ...(this.importSettings.triage.rubric ?? {}) };
+  }
+
+  /** Run the import-action triage pass over the fresh items (triage spec §6).
+   * The deterministic prefilter always runs; the LLM is engaged only when the
+   * per-import flag is set AND a provider is actually ready, and even then only
+   * over the prefilter-`unsure` remainder. Stays out of `stageItems`/`pipeline`
+   * so the staging boundary never calls an LLM (spec §0 rule 2). */
+  private triageFresh(fresh: RawItem[], useLlmTriage: boolean) {
+    const useLlm = useLlmTriage && this.llmReady && this.llm !== null;
+    return triageItems(fresh, {
+      rubric: this.triageRubric(),
+      llm: useLlm ? this.llm : null,
+      model: useLlm && this.llmConfig ? `${this.llmConfig.provider}:${this.llmConfig.model}` : undefined
+    });
+  }
+
+  /** Shared run path: pull the token, fetch via the adapter, triage the fresh
+   * items, then stage candidates and reload the inbox. Stays behind the Stage-1
+   * boundary — `stageItems` never writes into `entries/` and never calls an LLM;
+   * the triage pass (which may, when the flag is set, classify the ambiguous
+   * remainder before staging) lives here in the import-action layer. */
   private runStage(
     source: LiveSource,
-    fetcher: (http: Http, token: string) => Promise<RawItem[]>
+    fetcher: (http: Http, token: string) => Promise<RawItem[]>,
+    opts: { useLlmTriage: boolean }
   ): Promise<IngestReport | null> {
     return this.guard(async () => {
       if (!this.store) throw new Error('Open a record folder first');
@@ -333,7 +409,12 @@ class AppState {
       const token = await secrets.get(TOKEN_NAMES[source]);
       if (!token) throw new Error(`No ${source} token saved — add one first`);
       const items = await fetcher(http, token);
-      const report = await stageItems(this.store, items);
+      // Triage only the items a stage run would actually keep, so the LLM never
+      // sees already-promoted/rejected content (spec §6). Pass the full `items`
+      // to stageItems so its report still counts those skips.
+      const fresh = await selectNewItems(this.store, items);
+      const signals = await this.triageFresh(fresh, opts.useLlmTriage);
+      const report = await stageItems(this.store, items, { signals });
       this.lastImportReport = report;
       await this.loadCandidates();
       const known = report.skippedPromoted + report.skippedRejected;
@@ -343,13 +424,19 @@ class AppState {
   }
 
   importGithub(params: Omit<GithubFetchOpts, 'token'>): Promise<IngestReport | null> {
-    return this.runStage('github', (http, token) => fetchGithub(http, { ...params, token }));
+    return this.runStage('github', (http, token) => fetchGithub(http, { ...params, token }), {
+      useLlmTriage: this.importSettings.triage.useLlm
+    });
   }
   importAsana(params: Omit<AsanaFetchOpts, 'token'>): Promise<IngestReport | null> {
-    return this.runStage('asana', (http, token) => fetchAsana(http, { ...params, token }));
+    return this.runStage('asana', (http, token) => fetchAsana(http, { ...params, token }), {
+      useLlmTriage: this.importSettings.triage.useLlm
+    });
   }
   importGmail(params: Omit<GmailFetchOpts, 'token'>): Promise<IngestReport | null> {
-    return this.runStage('gmail', (http, token) => fetchGmail(http, { ...params, token }));
+    return this.runStage('gmail', (http, token) => fetchGmail(http, { ...params, token }), {
+      useLlmTriage: this.importSettings.triage.useLlm
+    });
   }
 
   /** LinkedIn is import-only (plan §1): pick the export CSVs, parse, stage.
@@ -374,7 +461,11 @@ class AppState {
       if (items.length === 0) {
         throw new Error('No Positions.csv / Projects.csv / Education.csv rows found in the selected files');
       }
-      const report = await stageItems(this.store, items);
+      // LinkedIn runs prefilter-only — archive rows are record-grade, always
+      // `keep`, and are never sent to the LLM (spec §4).
+      const fresh = await selectNewItems(this.store, items);
+      const signals = await this.triageFresh(fresh, false);
+      const report = await stageItems(this.store, items, { signals });
       this.lastImportReport = report;
       await this.loadCandidates();
       const known = report.skippedPromoted + report.skippedRejected;

@@ -9,8 +9,9 @@
 import { RETRO_KEYS, type Fact, type Retrospective } from './schema';
 import { emptyRetro } from './schema';
 
-/** Strip a leading/trailing ```json … ``` code fence if the model added one. */
-function stripFence(raw: string): string {
+/** Strip a leading/trailing ```json … ``` code fence if the model added one.
+ * Exported so sibling passes (e.g. `triage/`) reuse the same tolerant parse. */
+export function stripFence(raw: string): string {
   const t = raw.trim();
   const fenced = /^```(?:json)?\s*\n([\s\S]*?)\n```$/.exec(t);
   return fenced ? fenced[1].trim() : t;
