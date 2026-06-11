@@ -1,0 +1,216 @@
+<script lang="ts">
+  import { app, type LiveSource } from '$lib/state.svelte';
+
+  // Transient token-entry boxes (the saved value lives in the keyring, never here).
+  let tokens = $state<Record<LiveSource, string>>({ github: '', asana: '', gmail: '' });
+
+  // Refresh which sources have a saved token whenever a record is open.
+  $effect(() => {
+    if (app.store) app.refreshTokenPresence();
+  });
+
+  async function saveToken(source: LiveSource) {
+    await app.setSourceToken(source, tokens[source]);
+    tokens[source] = '';
+  }
+
+  /** Persist the non-secret params before each run so they stick. */
+  function persist() {
+    app.saveImportSettings($state.snapshot(app.importSettings));
+  }
+
+  async function runGithub() {
+    persist();
+    const g = app.importSettings.github;
+    await app.importGithub({
+      user: g.user.trim(),
+      repo: g.repo.trim() || undefined,
+      since: g.since || undefined,
+      until: g.until || undefined,
+      limit: g.limit || undefined,
+      baseUrl: g.baseUrl.trim() || undefined
+    });
+  }
+
+  async function runAsana() {
+    persist();
+    const a = app.importSettings.asana;
+    await app.importAsana({
+      workspace: a.workspace.trim() || undefined,
+      completedSince: a.completedSince.trim() || undefined,
+      limit: a.limit || undefined
+    });
+  }
+
+  async function runGmail() {
+    persist();
+    const m = app.importSettings.gmail;
+    await app.importGmail({ query: m.query.trim(), limit: m.limit || undefined });
+  }
+
+  const inputCls =
+    'mt-0.5 rounded border border-[var(--color-line)] px-2 py-1.5 text-sm';
+  const btnCls =
+    'rounded border border-[var(--color-line)] px-3 py-1.5 text-sm hover:bg-gray-50 dark:hover:bg-white/5 disabled:opacity-50';
+  const runCls =
+    'rounded bg-[var(--color-accent)] px-3 py-1.5 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50';
+</script>
+
+{#snippet tokenRow(source: LiveSource, placeholder: string)}
+  <div class="flex flex-wrap items-end gap-2">
+    <label class="flex flex-col text-xs text-[var(--color-muted)]">
+      Token (stored in OS keyring)
+      <input
+        type="password"
+        bind:value={tokens[source]}
+        {placeholder}
+        class="{inputCls} w-72"
+      />
+    </label>
+    <button class={btnCls} disabled={app.busy || !tokens[source].trim()} onclick={() => saveToken(source)}>
+      Save token
+    </button>
+    <button class={btnCls} disabled={app.busy || !app.tokenPresent[source]} onclick={() => app.testSourceToken(source)}>
+      Test
+    </button>
+    {#if app.tokenPresent[source]}
+      <button class="text-xs text-[var(--color-private)] hover:underline" disabled={app.busy} onclick={() => app.setSourceToken(source, '')}>
+        clear
+      </button>
+    {/if}
+    <span class="text-xs {app.tokenPresent[source] ? 'text-green-700 dark:text-green-300' : 'text-[var(--color-muted)]'}">
+      {app.tokenPresent[source] ? 'token saved' : 'no token'}
+    </span>
+  </div>
+{/snippet}
+
+<div class="max-w-2xl space-y-8">
+  <section>
+    <h1 class="text-lg font-semibold">Import</h1>
+    <p class="mt-1 text-sm text-[var(--color-muted)]">
+      Fetch from your data sources and stage the results as candidates for review. Nothing here
+      writes to your record — everything lands in the <a href="/inbox" class="text-[var(--color-accent)] hover:underline">Inbox</a>,
+      private by default, until you promote it. Re-running never re-proposes something you already
+      promoted or rejected. Tokens are stored in the OS keyring, never in the record.
+    </p>
+  </section>
+
+  <!-- GitHub -->
+  <section class="space-y-2 border-t border-[var(--color-line)] pt-5">
+    <h2 class="text-sm font-semibold">GitHub</h2>
+    <p class="text-xs text-[var(--color-muted)]">
+      Issues &amp; PRs you authored in a date range (Search API). A personal access token with
+      <code>repo</code> read scope works.
+    </p>
+    {@render tokenRow('github', 'ghp_…')}
+    <div class="flex flex-wrap items-end gap-2">
+      <label class="flex flex-col text-xs text-[var(--color-muted)]">
+        User (login)
+        <input bind:value={app.importSettings.github.user} placeholder="octocat" class="{inputCls} w-40" />
+      </label>
+      <label class="flex flex-col text-xs text-[var(--color-muted)]">
+        Repo (optional)
+        <input bind:value={app.importSettings.github.repo} placeholder="owner/name" class="{inputCls} w-44" />
+      </label>
+      <label class="flex flex-col text-xs text-[var(--color-muted)]">
+        Since
+        <input type="date" bind:value={app.importSettings.github.since} class={inputCls} />
+      </label>
+      <label class="flex flex-col text-xs text-[var(--color-muted)]">
+        Until
+        <input type="date" bind:value={app.importSettings.github.until} class={inputCls} />
+      </label>
+      <label class="flex flex-col text-xs text-[var(--color-muted)]">
+        Limit
+        <input type="number" min="1" max="300" bind:value={app.importSettings.github.limit} class="{inputCls} w-20" />
+      </label>
+    </div>
+    <button class={runCls} disabled={app.busy || !app.importSettings.github.user.trim()} onclick={runGithub}>
+      Run GitHub import
+    </button>
+  </section>
+
+  <!-- Asana -->
+  <section class="space-y-2 border-t border-[var(--color-line)] pt-5">
+    <h2 class="text-sm font-semibold">Asana</h2>
+    <p class="text-xs text-[var(--color-muted)]">
+      Tasks assigned to you. Set a “completed since” floor (e.g. <code>2019-01-01</code>) to pull
+      finished work for reconstruction; leave blank for open tasks only.
+    </p>
+    {@render tokenRow('asana', 'personal access token')}
+    <div class="flex flex-wrap items-end gap-2">
+      <label class="flex flex-col text-xs text-[var(--color-muted)]">
+        Workspace gid (optional)
+        <input bind:value={app.importSettings.asana.workspace} placeholder="first workspace" class="{inputCls} w-44" />
+      </label>
+      <label class="flex flex-col text-xs text-[var(--color-muted)]">
+        Completed since
+        <input bind:value={app.importSettings.asana.completedSince} placeholder="now | 2019-01-01" class="{inputCls} w-40" />
+      </label>
+      <label class="flex flex-col text-xs text-[var(--color-muted)]">
+        Limit
+        <input type="number" min="1" max="100" bind:value={app.importSettings.asana.limit} class="{inputCls} w-20" />
+      </label>
+    </div>
+    <button class={runCls} disabled={app.busy} onclick={runAsana}>Run Asana import</button>
+  </section>
+
+  <!-- Gmail -->
+  <section class="space-y-2 border-t border-[var(--color-line)] pt-5">
+    <h2 class="text-sm font-semibold">Gmail</h2>
+    <p class="text-xs text-[var(--color-muted)]">
+      Metadata only — subjects &amp; snippets, never message bodies. Needs a Gmail
+      <code>readonly</code> OAuth access token. The query is the selection, e.g.
+      <code>in:sent after:2019/01/01 before:2020/01/01</code>.
+    </p>
+    {@render tokenRow('gmail', 'OAuth access token (ya29.…)')}
+    <div class="flex flex-wrap items-end gap-2">
+      <label class="flex flex-1 flex-col text-xs text-[var(--color-muted)]">
+        Search query
+        <input bind:value={app.importSettings.gmail.query} placeholder="in:sent after:2019/01/01 before:2020/01/01" class="{inputCls} w-full" />
+      </label>
+      <label class="flex flex-col text-xs text-[var(--color-muted)]">
+        Limit
+        <input type="number" min="1" max="100" bind:value={app.importSettings.gmail.limit} class="{inputCls} w-20" />
+      </label>
+    </div>
+    <button class={runCls} disabled={app.busy || !app.importSettings.gmail.query.trim()} onclick={runGmail}>
+      Run Gmail import
+    </button>
+  </section>
+
+  <!-- LinkedIn -->
+  <section class="space-y-2 border-t border-[var(--color-line)] pt-5">
+    <h2 class="text-sm font-semibold">LinkedIn (archive)</h2>
+    <p class="text-xs text-[var(--color-muted)]">
+      Import-only — LinkedIn has no usable live API. Request your data export (Settings → Data
+      privacy → Get a copy of your data), unzip it, and select the CSVs. Recognized:
+      <code>Positions.csv</code>, <code>Projects.csv</code>, <code>Education.csv</code>.
+    </p>
+    <button class={runCls} disabled={app.busy} onclick={() => app.importLinkedin()}>
+      Choose CSVs &amp; import…
+    </button>
+  </section>
+
+  <!-- Last run -->
+  {#if app.lastImportReport}
+    {@const r = app.lastImportReport}
+    <section class="space-y-1 rounded-lg border border-[var(--color-line)] bg-gray-50 p-4 text-sm dark:bg-white/5">
+      <h2 class="text-sm font-semibold">Last import</h2>
+      <p class="text-[var(--color-muted)]">
+        Fetched {r.fetched} · <strong class="text-green-700 dark:text-green-300">staged {r.staged}</strong> ·
+        skipped {r.skippedPromoted} promoted, {r.skippedRejected} rejected
+        {#if r.errors.length}· <span class="text-amber-700 dark:text-amber-300">{r.errors.length} errors</span>{/if}
+      </p>
+      {#if r.staged > 0}
+        <p><a href="/inbox" class="text-[var(--color-accent)] hover:underline">Review {r.staged} candidate{r.staged === 1 ? '' : 's'} in the Inbox →</a></p>
+      {/if}
+      {#if r.errors.length}
+        <ul class="mt-1 list-disc pl-5 text-xs text-amber-700 dark:text-amber-300">
+          {#each r.errors.slice(0, 8) as err (err)}<li>{err}</li>{/each}
+          {#if r.errors.length > 8}<li>…and {r.errors.length - 8} more</li>{/if}
+        </ul>
+      {/if}
+    </section>
+  {/if}
+</div>

@@ -3,15 +3,18 @@
   import { onMount } from 'svelte';
   import { page } from '$app/state';
   import { app } from '$lib/state.svelte';
+  import { theme } from '$lib/theme.svelte';
 
   let { children } = $props();
 
   onMount(() => {
+    theme.init();
     app.init();
   });
 
   const nav = [
     { href: '/', label: 'Journal' },
+    { href: '/import', label: 'Import' },
     { href: '/inbox', label: 'Inbox' },
     { href: '/projects', label: 'Projects' },
     { href: '/profile', label: 'Profile' },
@@ -42,7 +45,7 @@
 
 <div class="flex h-full flex-col">
   <!-- Top bar -->
-  <header class="flex items-center gap-3 border-b border-[var(--color-line)] bg-white px-4 py-2">
+  <header class="flex items-center gap-3 border-b border-[var(--color-line)] bg-white px-4 py-2 dark:bg-[#1e1f24]">
     <span class="font-semibold tracking-tight">Who Am I</span>
 
     <nav class="flex items-center gap-1">
@@ -51,7 +54,7 @@
           href={item.href}
           class="rounded px-2.5 py-1 text-sm {page.url.pathname === item.href
             ? 'bg-[var(--color-accent)]/10 text-[var(--color-accent)] font-medium'
-            : 'text-[var(--color-muted)] hover:bg-gray-100'}"
+            : 'text-[var(--color-muted)] hover:bg-gray-100 dark:hover:bg-white/10'}"
         >
           {item.label}
         </a>
@@ -65,17 +68,25 @@
       {#if gitChip}
         <span
           class="rounded px-2 py-0.5 text-xs {gitChip.tone === 'ok'
-            ? 'bg-green-100 text-green-700'
+            ? 'bg-green-100 text-green-700 dark:bg-green-500/15 dark:text-green-300'
             : gitChip.tone === 'warn'
-              ? 'bg-amber-100 text-amber-700'
-              : 'bg-gray-100 text-gray-500'}"
+              ? 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300'
+              : 'bg-gray-100 text-gray-500 dark:bg-white/10 dark:text-gray-400'}"
         >
           {gitChip.text}
         </span>
       {/if}
+      <button
+        class="rounded border border-[var(--color-line)] px-2 py-1 text-xs hover:bg-gray-50 dark:hover:bg-white/5"
+        title={theme.current === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+        aria-label="Toggle dark mode"
+        onclick={() => theme.toggle()}
+      >
+        {theme.current === 'dark' ? '☀️' : '🌙'}
+      </button>
       {#if app.recordRoot}
         <button
-          class="rounded border border-[var(--color-line)] px-2 py-1 text-xs hover:bg-gray-50"
+          class="rounded border border-[var(--color-line)] px-2 py-1 text-xs hover:bg-gray-50 dark:hover:bg-white/5"
           title={app.recordRoot}
           onclick={() => app.chooseFolder()}
         >
@@ -94,9 +105,9 @@
 
   <!-- Toast -->
   {#if app.error}
-    <div class="border-b border-red-200 bg-red-50 px-4 py-1.5 text-sm text-red-700">{app.error}</div>
+    <div class="border-b border-red-200 bg-red-50 px-4 py-1.5 text-sm text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-300">{app.error}</div>
   {:else if app.message}
-    <div class="border-b border-green-200 bg-green-50 px-4 py-1.5 text-sm text-green-700">
+    <div class="border-b border-green-200 bg-green-50 px-4 py-1.5 text-sm text-green-700 dark:border-green-500/30 dark:bg-green-500/10 dark:text-green-300">
       {app.message}
     </div>
   {/if}

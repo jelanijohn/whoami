@@ -26,8 +26,8 @@
     <h1 class="text-lg font-semibold">Personal site</h1>
     <span class="text-xs text-[var(--color-muted)]">a standalone .html you can drop on any static host</span>
     <div class="ml-auto flex gap-2">
-      <button class="rounded border border-[var(--color-line)] px-2.5 py-1 text-sm hover:bg-gray-50" onclick={copy}>Copy HTML</button>
-      <button class="rounded border border-[var(--color-line)] px-2.5 py-1 text-sm hover:bg-gray-50" onclick={() => app.exportSite()}>Export to dist/</button>
+      <button class="rounded border border-[var(--color-line)] px-2.5 py-1 text-sm hover:bg-gray-50 dark:hover:bg-white/5" onclick={copy}>Copy HTML</button>
+      <button class="rounded border border-[var(--color-line)] px-2.5 py-1 text-sm hover:bg-gray-50 dark:hover:bg-white/5" onclick={() => app.exportSite()}>Export to dist/</button>
     </div>
   </div>
 

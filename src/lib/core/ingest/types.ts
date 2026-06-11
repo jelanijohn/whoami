@@ -54,6 +54,13 @@ export interface IngestReport {
   errors: string[];
 }
 
+/** Keyring entry names for provider tokens (the {@link Secrets} seam, plan §1).
+ * Like the Anthropic key, these NEVER touch the record repo or entry
+ * frontmatter — only the OS keyring. Gmail's is an OAuth access token. */
+export const GITHUB_TOKEN_NAME = 'github.token';
+export const ASANA_TOKEN_NAME = 'asana.token';
+export const GMAIL_TOKEN_NAME = 'gmail.access_token';
+
 /** Pull a string out of an unknown JSON shape, or undefined. */
 export function asStr(v: unknown): string | undefined {
   return typeof v === 'string' ? v : undefined;

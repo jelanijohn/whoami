@@ -76,7 +76,7 @@
   {:else if loading}
     <p class="text-sm text-[var(--color-muted)]">Computing rollup…</p>
   {:else if rollup}
-    <section class="space-y-3 rounded-lg border border-[var(--color-line)] bg-white p-4 shadow-sm">
+    <section class="space-y-3 rounded-lg border border-[var(--color-line)] bg-white p-4 shadow-sm dark:bg-[#1e1f24] dark:shadow-none">
       <div>
         <h2 class="text-base font-semibold">{current?.entry.frontmatter.title}</h2>
         <p class="text-sm text-[var(--color-muted)]">
@@ -120,7 +120,7 @@
             <h3 class="text-xs font-semibold text-[var(--color-muted)] uppercase">Top tags</h3>
             <div class="mt-1 flex flex-wrap gap-1">
               {#each rollup.topTags as t (t.tag)}
-                <span class="rounded bg-gray-100 px-1.5 py-0.5 text-xs text-[var(--color-muted)]">
+                <span class="rounded bg-gray-100 px-1.5 py-0.5 text-xs text-[var(--color-muted)] dark:bg-white/10">
                   #{t.tag} · {t.count}
                 </span>
               {/each}
@@ -142,7 +142,7 @@
     </section>
 
     <!-- Retrospective (Stage 2 reduce) — LLM-assisted, human-gated. -->
-    <section class="space-y-3 rounded-lg border border-[var(--color-line)] bg-white p-4 shadow-sm">
+    <section class="space-y-3 rounded-lg border border-[var(--color-line)] bg-white p-4 shadow-sm dark:bg-[#1e1f24] dark:shadow-none">
       <div class="flex flex-wrap items-center gap-2">
         <h2 class="text-base font-semibold">Retrospective</h2>
         <span class="text-xs text-[var(--color-muted)]">
@@ -173,7 +173,7 @@
             Review below, then accept to write it into the project entry (outside-the-markers prose is
             untouched).
           </p>
-          <pre class="max-h-96 overflow-auto rounded border border-[var(--color-line)] bg-gray-50 p-3 text-xs whitespace-pre-wrap">{proposal.inner}</pre>
+          <pre class="max-h-96 overflow-auto rounded border border-[var(--color-line)] bg-gray-50 p-3 text-xs whitespace-pre-wrap dark:bg-white/5">{proposal.inner}</pre>
           <div class="flex gap-2">
             <button
               class="rounded bg-[var(--color-accent)] px-3 py-1.5 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
@@ -183,7 +183,7 @@
               Accept &amp; save
             </button>
             <button
-              class="rounded border border-[var(--color-line)] px-3 py-1.5 text-sm hover:bg-gray-50"
+              class="rounded border border-[var(--color-line)] px-3 py-1.5 text-sm hover:bg-gray-50 dark:hover:bg-white/5"
               onclick={() => (proposal = null)}
             >
               Discard

@@ -6,6 +6,7 @@
 //!   - plugin-sql   → the derived, rebuildable SQLite index (sqlite feature)
 //!   - plugin-shell → shell out to the system `git` for the explicit Sync action
 //!   - plugin-dialog→ pick the record folder
+//!   - plugin-http  → CORS-free HTTP to the ingest/LLM APIs (esp. Anthropic)
 //!
 //! All real logic (the storage contract, indexing, generators, sync) lives in
 //! the framework-agnostic TypeScript core, so it stays testable without Tauri.
@@ -54,6 +55,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_sql::Builder::default().build())
         .invoke_handler(tauri::generate_handler![
             secret_get,

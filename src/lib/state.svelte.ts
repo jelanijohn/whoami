@@ -14,8 +14,24 @@ import {
   gitSync,
   makeLlm,
   ANTHROPIC_KEY_NAME,
+  fetchGithub,
+  fetchAsana,
+  fetchGmail,
+  validateGithub,
+  validateAsana,
+  validateGmail,
+  importLinkedinArchive,
+  stageItems,
+  GITHUB_TOKEN_NAME,
+  ASANA_TOKEN_NAME,
+  GMAIL_TOKEN_NAME,
+  type AsanaFetchOpts,
   type Entry,
   type GitStatus,
+  type GmailFetchOpts,
+  type GithubFetchOpts,
+  type Http,
+  type IngestReport,
   type Llm,
   type LlmConfig,
   type NewEntryInput,
@@ -23,6 +39,7 @@ import {
   type Profile,
   type ProjectRollup,
   type ProjectSummary,
+  type RawItem,
   type RebuildReport,
   type ReduceProposal,
   type SyncResult
@@ -32,6 +49,31 @@ import { open as openDialog } from '@tauri-apps/plugin-dialog';
 
 const LS_KEY = 'whoami:recordRoot';
 const LS_LLM = 'whoami:llm';
+const LS_IMPORT = 'whoami:import';
+
+/** Live (API) ingest sources. LinkedIn is import-only (archive), handled apart. */
+export type LiveSource = 'github' | 'asana' | 'gmail';
+
+/** Keyring entry name per live source — the token never leaves the keyring. */
+const TOKEN_NAMES: Record<LiveSource, string> = {
+  github: GITHUB_TOKEN_NAME,
+  asana: ASANA_TOKEN_NAME,
+  gmail: GMAIL_TOKEN_NAME
+};
+
+/** Non-secret import parameters, persisted on this machine (outside the record,
+ * like {@link LlmConfig}). Tokens are NOT here — they live in the keyring. */
+export interface ImportSettings {
+  github: { user: string; repo: string; since: string; until: string; limit: number; baseUrl: string };
+  asana: { workspace: string; completedSince: string; limit: number };
+  gmail: { query: string; limit: number };
+}
+
+export const DEFAULT_IMPORT_SETTINGS: ImportSettings = {
+  github: { user: '', repo: '', since: '', until: '', limit: 50, baseUrl: '' },
+  asana: { workspace: '', completedSince: '', limit: 50 },
+  gmail: { query: '', limit: 25 }
+};
 
 class AppState {
   /** Absolute path to the open record folder, or null before one is chosen. */
@@ -45,6 +87,12 @@ class AppState {
   projects = $state<ProjectSummary[]>([]);
   /** Staged ingestion candidates awaiting review (plan §1). */
   candidates = $state<Entry[]>([]);
+  /** Non-secret per-source import params, persisted outside the record. */
+  importSettings = $state<ImportSettings>(structuredClone(DEFAULT_IMPORT_SETTINGS));
+  /** Which live sources currently have a token in the keyring (TODO §2.1). */
+  tokenPresent = $state<Record<string, boolean>>({});
+  /** Result of the most recent import run, surfaced after each fetch. */
+  lastImportReport = $state<IngestReport | null>(null);
   /** Persisted LLM provider choice (plan §3), or null when none is configured. */
   llmConfig = $state<LlmConfig | null>(null);
   /** True when an {@link Llm} is actually built and ready to call. */
@@ -72,6 +120,19 @@ class AppState {
       if (rawLlm) {
         try {
           this.llmConfig = JSON.parse(rawLlm) as LlmConfig;
+        } catch {
+          /* ignore a corrupt setting */
+        }
+      }
+      const rawImport = localStorage.getItem(LS_IMPORT);
+      if (rawImport) {
+        try {
+          const p = JSON.parse(rawImport) as Partial<ImportSettings>;
+          this.importSettings = {
+            github: { ...DEFAULT_IMPORT_SETTINGS.github, ...p.github },
+            asana: { ...DEFAULT_IMPORT_SETTINGS.asana, ...p.asana },
+            gmail: { ...DEFAULT_IMPORT_SETTINGS.gmail, ...p.gmail }
+          };
         } catch {
           /* ignore a corrupt setting */
         }
@@ -106,6 +167,7 @@ class AppState {
       this.recordRoot = path;
       localStorage.setItem(LS_KEY, path);
       await this.buildLlm();
+      await this.refreshTokenPresence();
       await this.refresh();
       this.message = `Opened ${path}`;
     } catch (e) {
@@ -201,6 +263,123 @@ class AppState {
       await this.store!.rejectCandidate(candidatePath);
       this.candidates = await this.store!.listCandidates();
       this.message = title ? `Rejected “${title}”` : 'Rejected candidate';
+    });
+  }
+
+  // --- Ingest import (TODO §2 — populate the inbox) -------------------------
+
+  /** Persist the non-secret import params (outside the record repo). Quiet —
+   * it runs on every import, so the import result owns the toast. */
+  saveImportSettings(settings: ImportSettings): void {
+    this.importSettings = settings;
+    if (typeof localStorage !== 'undefined') localStorage.setItem(LS_IMPORT, JSON.stringify(settings));
+  }
+
+  /** Store (or, when blank, clear) a provider token in the OS keyring via the
+   * Secrets seam — never the record repo (plan §1). */
+  async setSourceToken(source: LiveSource, token: string): Promise<void> {
+    await this.guard(async () => {
+      if (!this.platform?.secrets) throw new Error('No secret storage available on this platform');
+      const t = token.trim();
+      if (t) await this.platform.secrets.set(TOKEN_NAMES[source], t);
+      else await this.platform.secrets.delete(TOKEN_NAMES[source]);
+      await this.refreshTokenPresence();
+      this.message = t ? `Saved ${source} token` : `Cleared ${source} token`;
+    });
+  }
+
+  /** Refresh which live sources have a token saved (drives the UI status). */
+  async refreshTokenPresence(): Promise<void> {
+    const secrets = this.platform?.secrets;
+    if (!secrets) {
+      this.tokenPresent = {};
+      return;
+    }
+    const out: Record<string, boolean> = {};
+    for (const source of Object.keys(TOKEN_NAMES) as LiveSource[]) {
+      const v = await secrets.get(TOKEN_NAMES[source]);
+      out[source] = !!v && v.trim().length > 0;
+    }
+    this.tokenPresent = out;
+  }
+
+  /** Cheap credential check against the provider (mirrors {@link testLlm}). */
+  async testSourceToken(source: LiveSource): Promise<void> {
+    await this.guard(async () => {
+      const http = this.platform?.http;
+      const secrets = this.platform?.secrets;
+      if (!http || !secrets) throw new Error('This platform has no network/secret support');
+      const token = await secrets.get(TOKEN_NAMES[source]);
+      if (!token) throw new Error(`No ${source} token saved`);
+      if (source === 'github') await validateGithub(http, token, this.importSettings.github.baseUrl || undefined);
+      else if (source === 'asana') await validateAsana(http, token);
+      else await validateGmail(http, token);
+      this.message = `${source} token looks valid`;
+    });
+  }
+
+  /** Shared run path: pull the token, fetch via the adapter, stage candidates,
+   * reload the inbox. Stays behind the Stage-1 boundary — fetch + stage only,
+   * never a write into `entries/` and never an LLM call. */
+  private runStage(
+    source: LiveSource,
+    fetcher: (http: Http, token: string) => Promise<RawItem[]>
+  ): Promise<IngestReport | null> {
+    return this.guard(async () => {
+      if (!this.store) throw new Error('Open a record folder first');
+      const http = this.platform?.http;
+      const secrets = this.platform?.secrets;
+      if (!http || !secrets) throw new Error('This platform has no network/secret support');
+      const token = await secrets.get(TOKEN_NAMES[source]);
+      if (!token) throw new Error(`No ${source} token saved — add one first`);
+      const items = await fetcher(http, token);
+      const report = await stageItems(this.store, items);
+      this.lastImportReport = report;
+      await this.loadCandidates();
+      const known = report.skippedPromoted + report.skippedRejected;
+      this.message = `${source}: staged ${report.staged}, ${known} already known${report.errors.length ? `, ${report.errors.length} errors` : ''}`;
+      return report;
+    });
+  }
+
+  importGithub(params: Omit<GithubFetchOpts, 'token'>): Promise<IngestReport | null> {
+    return this.runStage('github', (http, token) => fetchGithub(http, { ...params, token }));
+  }
+  importAsana(params: Omit<AsanaFetchOpts, 'token'>): Promise<IngestReport | null> {
+    return this.runStage('asana', (http, token) => fetchAsana(http, { ...params, token }));
+  }
+  importGmail(params: Omit<GmailFetchOpts, 'token'>): Promise<IngestReport | null> {
+    return this.runStage('gmail', (http, token) => fetchGmail(http, { ...params, token }));
+  }
+
+  /** LinkedIn is import-only (plan §1): pick the export CSVs, parse, stage.
+   * No token, no network — pure file → candidates. Returns null on cancel. */
+  async importLinkedin(): Promise<IngestReport | null> {
+    return this.guard(async () => {
+      if (!this.store || !this.platform) throw new Error('Open a record folder first');
+      const picked = await openDialog({
+        multiple: true,
+        title: 'Select LinkedIn export CSVs (Positions.csv, Projects.csv, Education.csv)',
+        filters: [{ name: 'CSV', extensions: ['csv'] }]
+      });
+      const paths = Array.isArray(picked) ? picked : picked ? [picked] : [];
+      if (paths.length === 0) return null; // cancelled
+      const files: Record<string, string> = {};
+      for (const p of paths) {
+        // Key by basename (cross-platform): the archive mapper matches on it.
+        const base = p.split(/[\\/]/).pop() ?? p;
+        files[base] = await this.platform.fs.readTextFile(p);
+      }
+      const items = importLinkedinArchive(files);
+      if (items.length === 0) {
+        throw new Error('No Positions.csv / Projects.csv / Education.csv rows found in the selected files');
+      }
+      const report = await stageItems(this.store, items);
+      this.lastImportReport = report;
+      await this.loadCandidates();
+      const known = report.skippedPromoted + report.skippedRejected;
+      this.message = `linkedin: staged ${report.staged}, ${known} already known${report.errors.length ? `, ${report.errors.length} errors` : ''}`;
+      return report;
     });
   }
 

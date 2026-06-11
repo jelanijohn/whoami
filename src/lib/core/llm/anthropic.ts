@@ -28,7 +28,11 @@ export function makeAnthropicLlm(http: Http, secrets: Secrets, config: LlmConfig
         headers: {
           'content-type': 'application/json',
           'x-api-key': key,
-          'anthropic-version': ANTHROPIC_VERSION
+          'anthropic-version': ANTHROPIC_VERSION,
+          // plugin-http issues the request from Rust but forwards the webview's
+          // Origin header, so Anthropic still treats it as a browser call and
+          // requires this explicit opt-in. The key never leaves the desktop app.
+          'anthropic-dangerous-direct-browser-access': 'true'
         },
         body: JSON.stringify({
           model: config.model,

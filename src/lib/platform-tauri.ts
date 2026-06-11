@@ -13,6 +13,7 @@
 
 import Database from '@tauri-apps/plugin-sql';
 import { Command } from '@tauri-apps/plugin-shell';
+import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
 import {
   exists,
   mkdir,
@@ -73,14 +74,16 @@ const git: GitRunner = {
 };
 
 /**
- * Http seam via the webview's fetch. GitHub, Asana, and Google APIs all send
- * CORS headers, so plain fetch works from the Tauri webview. If a future
- * provider doesn't, upgrade this to @tauri-apps/plugin-http (same interface,
- * no CORS constraint) — the seam means nothing else changes.
+ * Http seam via @tauri-apps/plugin-http: requests are issued from the Rust side,
+ * so they are not subject to the webview's CORS policy. This matters because the
+ * Anthropic Messages API sends no CORS headers for browser origins — a plain
+ * webview fetch to it fails the preflight with "TypeError: Load failed". The
+ * plugin's `fetch` keeps the Web API signature, so the seam is otherwise
+ * unchanged; the reachable hosts are scoped in src-tauri/capabilities/default.json.
  */
 const tauriHttp: Http = {
   async request(req: HttpRequest): Promise<HttpResponse> {
-    const res = await fetch(req.url, {
+    const res = await tauriFetch(req.url, {
       method: req.method ?? 'GET',
       headers: req.headers,
       body: req.body

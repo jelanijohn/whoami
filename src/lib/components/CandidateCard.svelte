@@ -32,13 +32,13 @@
   });
 </script>
 
-<article class="rounded-lg border border-[var(--color-line)] bg-white p-4 shadow-sm">
+<article class="rounded-lg border border-[var(--color-line)] bg-white p-4 shadow-sm dark:bg-[#1e1f24] dark:shadow-none">
   <div class="flex flex-wrap items-center gap-2">
     <span class="rounded bg-[var(--color-accent)]/10 px-1.5 py-0.5 text-xs font-medium text-[var(--color-accent)]">
       {fm.type}
     </span>
     {#if source}
-      <span class="rounded bg-gray-100 px-1.5 py-0.5 text-xs font-medium text-[var(--color-muted)]">
+      <span class="rounded bg-gray-100 px-1.5 py-0.5 text-xs font-medium text-[var(--color-muted)] dark:bg-white/10">
         {source}
       </span>
     {/if}
@@ -53,7 +53,7 @@
   <h3 class="mt-1 text-base font-semibold">{fm.title}</h3>
 
   {#if excerpt.trim()}
-    <p class="mt-2 whitespace-pre-wrap text-sm text-gray-700">{excerpt}</p>
+    <p class="mt-2 whitespace-pre-wrap text-sm text-gray-700 dark:text-gray-300">{excerpt}</p>
   {/if}
 
   <div class="mt-3 flex flex-wrap items-center gap-2 border-t border-[var(--color-line)] pt-3">

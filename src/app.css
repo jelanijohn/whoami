@@ -1,5 +1,10 @@
 @import 'tailwindcss';
 
+/* Class-based dark mode: `dark:` variants apply when <html> (or an ancestor)
+   carries the `dark` class. The toggle in the layout sets it; an inline script
+   in app.html applies it pre-paint so there's no flash. */
+@custom-variant dark (&:where(.dark, .dark *));
+
 /* Who Am I — a calm, document-like surface. The record is the point;
    the chrome stays out of the way. */
 @theme {
@@ -13,6 +18,19 @@
 
 :root {
   color-scheme: light;
+}
+
+/* Dark theme: redefine the semantic tokens so every `var(--color-*)` usage
+   (borders, muted text, accent, paper, ink) flips for free. Hardcoded
+   surface/status colors are handled with `dark:` variants at the call sites. */
+:root.dark {
+  color-scheme: dark;
+  --color-ink: #e7e7e3;
+  --color-paper: #17181c;
+  --color-muted: #9a9a96;
+  --color-line: #34353c;
+  --color-accent: #5a72e8;
+  --color-private: #f0883e;
 }
 
 html,
