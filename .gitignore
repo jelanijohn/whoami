@@ -25,6 +25,7 @@ vite.config.*.timestamp-*
 # --- OS / editor ---
 .DS_Store
 Thumbs.db
+/.idea
 
 # --- Claude local session state (keep shared config, ignore local) ---
 .claude/settings.local.json
