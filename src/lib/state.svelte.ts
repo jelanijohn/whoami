@@ -16,6 +16,7 @@ import {
   ANTHROPIC_KEY_NAME,
   fetchGithub,
   fetchAsana,
+  listAsanaProjects,
   fetchGmail,
   validateGithub,
   validateAsana,
@@ -32,6 +33,7 @@ import {
   ASANA_TOKEN_NAME,
   GMAIL_TOKEN_NAME,
   type AsanaFetchOpts,
+  type AsanaProject,
   type Entry,
   type GitStatus,
   type GmailFetchOpts,
@@ -87,7 +89,17 @@ export interface ImportSettings {
      * default for this source. */
     importPrivate: boolean;
   };
-  asana: { workspace: string; completedSince: string; limit: number };
+  asana: {
+    workspace: string;
+    /** Project gid to scope the fetch to ('' ⇒ the whole workspace). Chosen via
+     * the picker fed by {@link AppState.loadAsanaProjects}. */
+    project: string;
+    since: string;
+    until: string;
+    /** Include completed tasks (default true — historical reconstruction). */
+    includeCompleted: boolean;
+    limit: number;
+  };
   gmail: { query: string; limit: number };
   /** Triage settings (spec §6): the per-import LLM flag (off by default) plus
    * optional rubric overrides. Persisted here (localStorage), never the record. */
@@ -107,7 +119,7 @@ export const DEFAULT_IMPORT_SETTINGS: ImportSettings = {
     discussionCharCap: '',
     importPrivate: true
   },
-  asana: { workspace: '', completedSince: '', limit: 50 },
+  asana: { workspace: '', project: '', since: '', until: '', includeCompleted: true, limit: 100 },
   gmail: { query: '', limit: 25 },
   triage: { useLlm: false }
 };
@@ -133,6 +145,9 @@ class AppState {
   importProject = $state('');
   /** Which live sources currently have a token in the keyring (TODO §2.1). */
   tokenPresent = $state<Record<string, boolean>>({});
+  /** Asana projects fetched for the import picker (empty until "Load projects").
+   * Transient — project gids are account-specific, so it is not persisted. */
+  asanaProjects = $state<AsanaProject[]>([]);
   /** Result of the most recent import run, surfaced after each fetch. */
   lastImportReport = $state<IngestReport | null>(null);
   /** Persisted LLM provider choice (plan §3), or null when none is configured. */
@@ -479,6 +494,23 @@ class AppState {
       else if (source === 'asana') await validateAsana(http, token);
       else await validateGmail(http, token);
       this.message = `${source} token looks valid`;
+    });
+  }
+
+  /** Fetch the workspace's projects to populate the Asana import picker. Needs a
+   * saved token; resolves the workspace from settings, or the account's first. */
+  async loadAsanaProjects(): Promise<void> {
+    await this.guard(async () => {
+      const http = this.platform?.http;
+      const secrets = this.platform?.secrets;
+      if (!http || !secrets) throw new Error('This platform has no network/secret support');
+      const token = await secrets.get(TOKEN_NAMES.asana);
+      if (!token) throw new Error('No asana token saved — add one first');
+      this.asanaProjects = await listAsanaProjects(http, {
+        token,
+        workspace: this.importSettings.asana.workspace.trim() || undefined
+      });
+      this.message = `Loaded ${this.asanaProjects.length} Asana project${this.asanaProjects.length === 1 ? '' : 's'}`;
     });
   }
 

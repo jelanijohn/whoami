@@ -43,7 +43,10 @@
     const a = app.importSettings.asana;
     await app.importAsana({
       workspace: a.workspace.trim() || undefined,
-      completedSince: a.completedSince.trim() || undefined,
+      project: a.project.trim() || undefined,
+      since: a.since || undefined,
+      until: a.until || undefined,
+      includeCompleted: a.includeCompleted,
       limit: a.limit || undefined
     });
   }
@@ -223,8 +226,10 @@
   <section class="space-y-2 border-t border-[var(--color-line)] pt-5">
     <h2 class="text-sm font-semibold">Asana</h2>
     <p class="text-xs text-[var(--color-muted)]">
-      Tasks assigned to you. Set a “completed since” floor (e.g. <code>2019-01-01</code>) to pull
-      finished work for reconstruction; leave blank for open tasks only.
+      Every task you've worked on — created, commented, assigned, or @mentioned — even ones since
+      reassigned to a reviewer (the durable signal is collaborator membership, not the current
+      assignee). Premium accounts use workspace search; others fall back to project enumeration
+      automatically. Completed tasks are included by default for reconstruction.
     </p>
     {@render tokenRow('asana', 'personal access token')}
     <div class="flex flex-wrap items-end gap-2">
@@ -233,12 +238,35 @@
         <input bind:value={app.importSettings.asana.workspace} placeholder="first workspace" class="{inputCls} w-44" />
       </label>
       <label class="flex flex-col text-xs text-[var(--color-muted)]">
-        Completed since
-        <input bind:value={app.importSettings.asana.completedSince} placeholder="now | 2019-01-01" class="{inputCls} w-40" />
+        Project
+        <select bind:value={app.importSettings.asana.project} class="{inputCls} w-56">
+          <option value="">— all projects in workspace —</option>
+          {#each app.asanaProjects as p (p.gid)}
+            <option value={p.gid}>{p.name}</option>
+          {/each}
+          {#if app.importSettings.asana.project && !app.asanaProjects.some((p) => p.gid === app.importSettings.asana.project)}
+            <option value={app.importSettings.asana.project}>{app.importSettings.asana.project}</option>
+          {/if}
+        </select>
+      </label>
+      <button class={btnCls} disabled={app.busy || !app.tokenPresent.asana} onclick={() => app.loadAsanaProjects()}>
+        Load projects
+      </button>
+      <label class="flex flex-col text-xs text-[var(--color-muted)]">
+        Since
+        <input type="date" bind:value={app.importSettings.asana.since} class="{inputCls} w-40" />
+      </label>
+      <label class="flex flex-col text-xs text-[var(--color-muted)]">
+        Until
+        <input type="date" bind:value={app.importSettings.asana.until} class="{inputCls} w-40" />
       </label>
       <label class="flex flex-col text-xs text-[var(--color-muted)]">
         Limit
-        <input type="number" min="1" max="100" bind:value={app.importSettings.asana.limit} class="{inputCls} w-20" />
+        <input type="number" min="1" max="500" bind:value={app.importSettings.asana.limit} class="{inputCls} w-20" />
+      </label>
+      <label class="flex items-center gap-1.5 text-xs text-[var(--color-muted)]">
+        <input type="checkbox" bind:checked={app.importSettings.asana.includeCompleted} />
+        Include completed
       </label>
     </div>
     <button class={runCls} disabled={app.busy} onclick={runAsana}>Run Asana import</button>

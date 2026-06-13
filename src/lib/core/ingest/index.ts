@@ -25,11 +25,18 @@ export {
   type GithubFetchOpts
 } from './github';
 export {
+  AsanaPaymentRequiredError,
   mapAsanaTask,
+  taskInvolvesMe,
+  resolveMe,
   firstWorkspace,
+  searchTasksForMe,
+  listProjectTasksForMe,
+  listAsanaProjects,
   fetchAsana,
   validateAsana,
-  type AsanaFetchOpts
+  type AsanaFetchOpts,
+  type AsanaProject
 } from './asana';
 export {
   internalDateToIso,

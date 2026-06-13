@@ -17,7 +17,15 @@ import {
   fetchGithub
 } from './github';
 import type { Http, HttpRequest, HttpResponse } from '../types';
-import { mapAsanaTask } from './asana';
+import {
+  mapAsanaTask,
+  taskInvolvesMe,
+  searchTasksForMe,
+  listProjectTasksForMe,
+  listAsanaProjects,
+  fetchAsana,
+  AsanaPaymentRequiredError
+} from './asana';
 import { mapGmailMessage, internalDateToIso, header } from './gmail';
 import {
   parseCsv,
@@ -388,8 +396,8 @@ describe('fetchGithub GraphQL listing', () => {
 
 // --- Asana mapper (fixture ported from waid's provider/asana.rs tests) ------
 
-describe('asana adapter', () => {
-  it('maps a completed task', () => {
+describe('asana mapper', () => {
+  it('maps a completed task, surfacing the current assignee', () => {
     const item = mapAsanaTask({
       gid: '12345',
       name: 'Write the spec',
@@ -398,7 +406,7 @@ describe('asana adapter', () => {
       completed_at: '2026-06-02T16:00:00.000Z',
       created_at: '2026-05-01T08:00:00.000Z',
       modified_at: '2026-06-02T16:00:00.000Z',
-      assignee: { name: 'Jelani John' },
+      assignee: { gid: 'u1', name: 'Jelani John' },
       due_on: '2026-06-10',
       memberships: [{ project: { name: 'Roadmap' } }]
     });
@@ -409,7 +417,23 @@ describe('asana adapter', () => {
     expect(item.meta?.status).toBe('completed');
     expect(item.meta?.project).toBe('Roadmap');
     expect(item.meta?.due).toBe('2026-06-10');
+    expect(item.meta?.assignee).toBe('Jelani John'); // "now assigned to X"
+    expect(item.body).toContain('Assigned to: Jelani John.');
     expect(item.suggestedProject).toBe('roadmap');
+  });
+
+  it('maps an open task with no assignee/project, date falls back to modified_at', () => {
+    const item = mapAsanaTask({
+      gid: '7',
+      name: 'In flight',
+      created_at: '2026-05-01T08:00:00.000Z',
+      modified_at: '2026-05-09T08:00:00.000Z'
+    });
+    expect(item.meta?.status).toBe('open');
+    expect(item.meta?.assignee).toBeUndefined();
+    expect(item.meta?.project).toBeUndefined();
+    expect(item.date).toBe('2026-05-09'); // completed_at absent → modified_at
+    expect(item.suggestedProject).toBeUndefined();
   });
 
   it('tolerates missing fields', () => {
@@ -418,6 +442,197 @@ describe('asana adapter', () => {
     expect(item.date).toBe('');
     expect(item.meta?.status).toBe('open');
     expect(item.suggestedProject).toBeUndefined();
+  });
+});
+
+// --- Asana involvement predicate (the reassignment-survival signal, §8) -----
+
+describe('taskInvolvesMe', () => {
+  it('true when me is the current assignee', () => {
+    expect(taskInvolvesMe({ assignee: { gid: 'me' }, followers: [] }, 'me')).toBe(true);
+  });
+
+  it('true when me is a follower but NOT the assignee (reassigned-to-reviewer)', () => {
+    // The key regression: the task was handed to a reviewer, so `assignee` is
+    // someone else, but my prior collaborator membership survives.
+    expect(
+      taskInvolvesMe({ assignee: { gid: 'reviewer' }, followers: [{ gid: 'me' }, { gid: 'x' }] }, 'me')
+    ).toBe(true);
+  });
+
+  it('false when me is neither assignee nor follower', () => {
+    expect(taskInvolvesMe({ assignee: { gid: 'other' }, followers: [{ gid: 'x' }] }, 'me')).toBe(false);
+  });
+
+  it('false (no throw) when followers is missing', () => {
+    expect(taskInvolvesMe({ assignee: { gid: 'other' } }, 'me')).toBe(false);
+    expect(taskInvolvesMe({}, 'me')).toBe(false);
+  });
+});
+
+// --- Asana search path: manual created_at.before pagination (§9) ------------
+
+describe('searchTasksForMe', () => {
+  const atask = (gid: number, createdAt: string) => ({
+    gid: String(gid),
+    name: `task ${gid}`,
+    created_at: createdAt,
+    followers: [{ gid: 'me' }]
+  });
+
+  it('walks created_at.before across pages, dedupes timestamp ties, terminates', async () => {
+    const befores: Array<string | null> = [];
+    const http: Http = {
+      async request(req: HttpRequest): Promise<HttpResponse> {
+        const before = new URL(req.url).searchParams.get('created_at.before');
+        befores.push(before);
+        // Page 1 (no cursor): 100 tasks, oldest is gid 100 @ 2024-01-10.
+        // Page 2 (before=2024-01-10…): the boundary task repeats (tie → must
+        // dedupe) plus two strictly-older tasks; <100 ⇒ last page.
+        const tasks =
+          before === null
+            ? [
+                ...Array.from({ length: 99 }, (_, i) => atask(i + 1, '2024-02-01T00:00:00.000Z')),
+                atask(100, '2024-01-10T00:00:00.000Z')
+              ]
+            : [
+                atask(100, '2024-01-10T00:00:00.000Z'),
+                atask(101, '2024-01-09T00:00:00.000Z'),
+                atask(102, '2024-01-08T00:00:00.000Z')
+              ];
+        return { status: 200, ok: true, headers: {}, text: JSON.stringify({ data: tasks }) };
+      }
+    };
+    const items = await searchTasksForMe(http, { token: 't', workspace: 'WS', meGid: 'me', limit: 500 });
+    expect(items).toHaveLength(102); // 100 + 2 new; the repeated gid 100 deduped
+    expect(items.filter((i) => i.sourceId === '100')).toHaveLength(1);
+    expect(befores).toEqual([null, '2024-01-10T00:00:00.000Z']); // walked the cursor once
+    // Search tasks here have no assignee ⇒ role is collaborator.
+    expect(items[0].extraFrontmatter?.asana_role).toBe('collaborator');
+  });
+
+  it('throws AsanaPaymentRequiredError on HTTP 402', async () => {
+    const http = fakeHttp([{ match: '/tasks/search', status: 402 }]);
+    await expect(
+      searchTasksForMe(http, { token: 't', workspace: 'WS', meGid: 'me' })
+    ).rejects.toBeInstanceOf(AsanaPaymentRequiredError);
+  });
+
+  it('scopes the search to one project via projects.any when given a project gid', async () => {
+    let captured: string | null = null;
+    const http: Http = {
+      async request(req: HttpRequest): Promise<HttpResponse> {
+        captured = new URL(req.url).searchParams.get('projects.any');
+        return { status: 200, ok: true, headers: {}, text: JSON.stringify({ data: [] }) };
+      }
+    };
+    await searchTasksForMe(http, { token: 't', workspace: 'WS', meGid: 'me', project: 'P1' });
+    expect(captured).toBe('P1');
+  });
+});
+
+// --- Asana project path: dedupe + client-side date filter (§10) -------------
+
+describe('listProjectTasksForMe', () => {
+  it('keeps involved tasks, dedupes a gid across projects, drops out-of-range', async () => {
+    const http = fakeHttp([
+      {
+        match: '/workspaces/WS/projects',
+        json: { data: [{ gid: 'P1', name: 'Proj1' }, { gid: 'P2', name: 'Proj2' }], next_page: null }
+      },
+      {
+        match: '/projects/P1/tasks',
+        json: {
+          data: [
+            { gid: 'a', name: 'A', followers: [{ gid: 'me' }], created_at: '2024-06-01T00:00:00.000Z' },
+            { gid: 's', name: 'Shared', followers: [{ gid: 'me' }], created_at: '2024-06-02T00:00:00.000Z' },
+            // not involved → dropped by the predicate
+            { gid: 'z', name: 'Theirs', followers: [{ gid: 'other' }], created_at: '2024-06-03T00:00:00.000Z' }
+          ],
+          next_page: null
+        }
+      },
+      {
+        match: '/projects/P2/tasks',
+        json: {
+          data: [
+            // same gid as P1 → deduped across projects
+            { gid: 's', name: 'Shared', followers: [{ gid: 'me' }], created_at: '2024-06-02T00:00:00.000Z' },
+            // involved but out of range → dropped client-side
+            { gid: 'b', name: 'Old', followers: [{ gid: 'me' }], created_at: '2020-01-01T00:00:00.000Z' }
+          ],
+          next_page: null
+        }
+      }
+    ]);
+    const items = await listProjectTasksForMe(http, {
+      token: 't',
+      workspace: 'WS',
+      meGid: 'me',
+      since: '2024-01-01',
+      until: '2024-12-31'
+    });
+    expect(items.map((i) => i.sourceId).sort()).toEqual(['a', 's']);
+  });
+
+  it('with a project gid, skips enumeration and fetches only that project', async () => {
+    // No '/workspaces/WS/projects' route: if enumeration ran it would 404 and
+    // throw, so a clean result proves the single-project shortcut was taken.
+    const http = fakeHttp([
+      {
+        match: '/projects/P1/tasks',
+        json: {
+          data: [{ gid: 'a', name: 'A', followers: [{ gid: 'me' }], created_at: '2024-06-01T00:00:00.000Z' }],
+          next_page: null
+        }
+      }
+    ]);
+    const items = await listProjectTasksForMe(http, {
+      token: 't',
+      workspace: 'WS',
+      meGid: 'me',
+      project: 'P1'
+    });
+    expect(items.map((i) => i.sourceId)).toEqual(['a']);
+  });
+});
+
+// --- Asana project picker: list workspace projects, sorted ------------------
+
+describe('listAsanaProjects', () => {
+  it('lists the workspace projects (gid + name), sorted by name', async () => {
+    const http = fakeHttp([
+      {
+        match: '/workspaces/WS/projects',
+        json: { data: [{ gid: 'P2', name: 'Beta' }, { gid: 'P1', name: 'Alpha' }], next_page: null }
+      }
+    ]);
+    const projects = await listAsanaProjects(http, { token: 't', workspace: 'WS' });
+    expect(projects).toEqual([
+      { gid: 'P1', name: 'Alpha' },
+      { gid: 'P2', name: 'Beta' }
+    ]);
+  });
+});
+
+// --- Asana orchestrator: auto fallback on 402 (§3, §11) ---------------------
+
+describe('fetchAsana auto fallback', () => {
+  it('routes to the project path when search returns 402', async () => {
+    const http = fakeHttp([
+      { match: '/tasks/search', status: 402 },
+      { match: '/workspaces/WS/projects', json: { data: [{ gid: 'P1', name: 'P' }], next_page: null } },
+      {
+        match: '/projects/P1/tasks',
+        json: {
+          data: [{ gid: 'x', name: 'X', followers: [{ gid: 'me' }], created_at: '2024-06-01T00:00:00.000Z' }],
+          next_page: null
+        }
+      }
+    ]);
+    const items = await fetchAsana(http, { token: 't', workspace: 'WS', meGid: 'me' });
+    expect(items).toHaveLength(1);
+    expect(items[0].sourceId).toBe('x');
   });
 });
 
