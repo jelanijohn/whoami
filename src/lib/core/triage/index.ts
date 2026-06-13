@@ -16,4 +16,4 @@ export {
 export { prefilterItem, type PrefilterOutcome } from './prefilter';
 export { buildTriagePrompt, triageItemView } from './prompts';
 export { parseVerdicts, type Verdict } from './parse';
-export { triageItems, type TriageOpts } from './pipeline';
+export { triageItems, llmTriageItems, type TriageOpts } from './pipeline';

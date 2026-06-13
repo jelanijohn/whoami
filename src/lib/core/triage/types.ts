@@ -103,6 +103,18 @@ export const DEFAULT_RUBRIC: TriageRubric = {
     '^typo',
     '^wip\\b',
     '^merge branch',
+    // Branch-promotion merges — environment plumbing, not work. Validated
+    // against rejected items, which take every shape: either direction, with or
+    // without the literal "merge" word, and a "from" phrasing —
+    //   "dev > prod merge - …", "prod < dev merge", "merge main > staging",
+    //   "dev > prod - landing page", "Update prod from dev".
+    // Both sides must be an environment word, so real titles ("main > index
+    // refactor") are untouched.
+    '\\w+\\s*>\\s*\\w+ merge\\b',
+    '\\b(dev|develop|development|stage|staging|main|master|prod|production|release|launch|qa|uat)\\s*[<>]\\s*(dev|develop|development|stage|staging|main|master|prod|production|release|launch|qa|uat)\\b',
+    '\\b(prod|production|staging|stage|main|master)\\s+from\\s+(dev|develop|development|staging|stage)\\b',
+    // "[do not merge]" / "do-not-merge" — explicitly not meant to land.
+    'do[\\s_-]?not[\\s_-]?merge',
     '^\\[skip ci\\]'
   ],
   asanaBoilerplate: ['standup', 'timesheet', 'weekly sync', '1:1', 'submit hours', 'fill out '],

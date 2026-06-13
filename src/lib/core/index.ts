@@ -23,7 +23,9 @@ export type {
   HttpResponse,
   Secrets,
   Llm,
-  LlmCompletionRequest
+  LlmCompletionRequest,
+  DocExtract,
+  ExtractedDoc
 } from './types';
 export { ENTRY_TYPES } from './types';
 

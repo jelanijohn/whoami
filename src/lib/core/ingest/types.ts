@@ -14,7 +14,7 @@
  * MUST wrap them in fenced data blocks with an explicit do-not-follow guard.
  */
 
-export type IngestSource = 'github' | 'asana' | 'gmail' | 'linkedin';
+export type IngestSource = 'github' | 'asana' | 'gmail' | 'linkedin' | 'resume';
 
 /** A normalized item from any provider — the common shape every `map*`
  * function produces (waid's `IntegrationItem`, adapted for a historical
@@ -64,6 +64,11 @@ export const GMAIL_TOKEN_NAME = 'gmail.access_token';
 /** Pull a string out of an unknown JSON shape, or undefined. */
 export function asStr(v: unknown): string | undefined {
   return typeof v === 'string' ? v : undefined;
+}
+
+/** Pull a finite number out of an unknown JSON shape, or undefined. */
+export function asNum(v: unknown): number | undefined {
+  return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
 }
 
 /** Safe nested lookup: `get(obj, 'a', 'b')` ≈ obj?.a?.b. */

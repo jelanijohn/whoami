@@ -21,9 +21,11 @@ import {
   validateAsana,
   validateGmail,
   importLinkedinArchive,
+  parseResume,
   stageItems,
   selectNewItems,
   triageItems,
+  llmTriageItems,
   DEFAULT_RUBRIC,
   type TriageRubric,
   GITHUB_TOKEN_NAME,
@@ -80,6 +82,10 @@ export interface ImportSettings {
     commentScope: 'self' | 'all';
     /** Blank ⇒ omit ⇒ adapter default (2000). Stored as a string for the input. */
     discussionCharCap: string;
+    /** Stage candidates as `private: true` (default). Unchecking stages them
+     * public from the start — the user's deliberate opt-out of the protective
+     * default for this source. */
+    importPrivate: boolean;
   };
   asana: { workspace: string; completedSince: string; limit: number };
   gmail: { query: string; limit: number };
@@ -98,7 +104,8 @@ export const DEFAULT_IMPORT_SETTINGS: ImportSettings = {
     baseUrl: '',
     fetchDiscussion: false,
     commentScope: 'self',
-    discussionCharCap: ''
+    discussionCharCap: '',
+    importPrivate: true
   },
   asana: { workspace: '', completedSince: '', limit: 50 },
   gmail: { query: '', limit: 25 },
@@ -119,6 +126,11 @@ class AppState {
   candidates = $state<Entry[]>([]);
   /** Non-secret per-source import params, persisted outside the record. */
   importSettings = $state<ImportSettings>(structuredClone(DEFAULT_IMPORT_SETTINGS));
+  /** Import-time project pre-selection (slug, '' ⇒ none). Seeds the `project`
+   * frontmatter of every candidate staged by the next import so the inbox picker
+   * defaults to it. Transient on purpose — project slugs are record-specific, so
+   * it is NOT persisted like {@link importSettings} and resets each session. */
+  importProject = $state('');
   /** Which live sources currently have a token in the keyring (TODO §2.1). */
   tokenPresent = $state<Record<string, boolean>>({});
   /** Result of the most recent import run, surfaced after each fetch. */
@@ -127,6 +139,9 @@ class AppState {
   llmConfig = $state<LlmConfig | null>(null);
   /** True when an {@link Llm} is actually built and ready to call. */
   llmReady = $state(false);
+  /** True when the platform can parse PDF/DOCX (the {@link DocExtract} seam is
+   * present). Drives whether résumé import is offered (résumé spec §6). */
+  docsAvailable = $state(false);
 
   busy = $state(false);
   message = $state('');
@@ -196,6 +211,7 @@ class AppState {
       this.platform = platform;
       this.store = store;
       this.recordRoot = path;
+      this.docsAvailable = !!platform.docs;
       localStorage.setItem(LS_KEY, path);
       await this.buildLlm();
       await this.refreshTokenPresence();
@@ -319,6 +335,101 @@ class AppState {
     });
   }
 
+  /** Promote several candidates in one pass, reloading + refreshing once at the
+   * end rather than per item. A single item failing doesn't abort the rest;
+   * the toast reports how many succeeded. Returns the count promoted. */
+  async promoteCandidates(items: { path: string; project?: string }[]): Promise<number> {
+    if (!this.store || items.length === 0) return 0;
+    return (
+      (await this.guard(async () => {
+        let ok = 0;
+        let failed = 0;
+        for (const { path, project = '' } of items) {
+          try {
+            await this.store!.promoteCandidate(path, { project });
+            ok++;
+          } catch {
+            failed++;
+          }
+        }
+        this.candidates = await this.store!.listCandidates();
+        await this.refresh();
+        this.message = `Promoted ${ok} candidate${ok === 1 ? '' : 's'}${failed ? `, ${failed} failed` : ''}`;
+        return ok;
+      })) ?? 0
+    );
+  }
+
+  /** Re-run the prefilter over the already-staged inbox so a rubric change
+   * (e.g. broadened triage patterns) reaches existing candidates, not just
+   * future imports. Prefilter-only — local, no LLM. */
+  async retriageInbox(): Promise<void> {
+    if (!this.store) return;
+    await this.guard(async () => {
+      const res = await this.store!.retriageCandidates(this.triageRubric());
+      this.candidates = await this.store!.listCandidates();
+      this.message = `Re-triaged ${res.total}: ${res.frivolous} frivolous, ${res.keep} keep${
+        res.updated ? ` (${res.updated} changed)` : ' (no changes)'
+      }`;
+    });
+  }
+
+  /** Run the kept inbox candidates through the LLM triage pass to catch
+   * frivolous cases the deterministic prefilter misses. Annotation only — items
+   * stay in the inbox; some `keep` flip to `frivolous` (triage spec §0). No-op
+   * with a clear message when no provider is configured. */
+  async llmTriageInbox(): Promise<void> {
+    if (!this.store) return;
+    if (!this.llmReady || !this.llm) {
+      this.message = 'Configure an AI provider first (Data → AI provider)';
+      return;
+    }
+    await this.guard(async () => {
+      // Only the `keep` set needs the model — already-frivolous items are caught.
+      const targets = await this.store!.candidateRawItems({ signal: 'keep' });
+      if (targets.length === 0) {
+        this.message = 'No kept candidates to send to the model';
+        return;
+      }
+      const model = this.llmConfig ? `${this.llmConfig.provider}:${this.llmConfig.model}` : undefined;
+      const results = await llmTriageItems(
+        targets.map((t) => t.item),
+        { llm: this.llm!, model, rubric: this.triageRubric() }
+      );
+      // Only persist the model's frivolous findings — re-affirming `keep` would
+      // rewrite every kept candidate to no effect. Items stay in the inbox.
+      const flagged = new Map([...results].filter(([, r]) => r.signal === 'frivolous'));
+      const res = await this.store!.applyTriageResults(flagged);
+      this.candidates = await this.store!.listCandidates();
+      this.message = `LLM triage: flagged ${res.frivolous} of ${targets.length} kept item${
+        targets.length === 1 ? '' : 's'
+      } as frivolous`;
+    });
+  }
+
+  /** Reject several candidates in one pass (see {@link promoteCandidates}).
+   * Returns the count rejected. */
+  async rejectCandidates(paths: string[]): Promise<number> {
+    if (!this.store || paths.length === 0) return 0;
+    return (
+      (await this.guard(async () => {
+        let ok = 0;
+        let failed = 0;
+        for (const path of paths) {
+          try {
+            await this.store!.rejectCandidate(path);
+            ok++;
+          } catch {
+            failed++;
+          }
+        }
+        this.candidates = await this.store!.listCandidates();
+        this.message = `Rejected ${ok} candidate${ok === 1 ? '' : 's'}${failed ? `, ${failed} failed` : ''}`;
+        return ok;
+      })) ?? 0
+    );
+  }
+
   // --- Ingest import (TODO §2 — populate the inbox) -------------------------
 
   /** Persist the non-secret import params (outside the record repo). Quiet —
@@ -399,7 +510,7 @@ class AppState {
   private runStage(
     source: LiveSource,
     fetcher: (http: Http, token: string) => Promise<RawItem[]>,
-    opts: { useLlmTriage: boolean }
+    opts: { useLlmTriage: boolean; private?: boolean }
   ): Promise<IngestReport | null> {
     return this.guard(async () => {
       if (!this.store) throw new Error('Open a record folder first');
@@ -414,7 +525,11 @@ class AppState {
       // to stageItems so its report still counts those skips.
       const fresh = await selectNewItems(this.store, items);
       const signals = await this.triageFresh(fresh, opts.useLlmTriage);
-      const report = await stageItems(this.store, items, { signals });
+      const report = await stageItems(this.store, items, {
+        signals,
+        private: opts.private,
+        project: this.importProject
+      });
       this.lastImportReport = report;
       await this.loadCandidates();
       const known = report.skippedPromoted + report.skippedRejected;
@@ -425,7 +540,8 @@ class AppState {
 
   importGithub(params: Omit<GithubFetchOpts, 'token'>): Promise<IngestReport | null> {
     return this.runStage('github', (http, token) => fetchGithub(http, { ...params, token }), {
-      useLlmTriage: this.importSettings.triage.useLlm
+      useLlmTriage: this.importSettings.triage.useLlm,
+      private: this.importSettings.github.importPrivate
     });
   }
   importAsana(params: Omit<AsanaFetchOpts, 'token'>): Promise<IngestReport | null> {
@@ -465,11 +581,54 @@ class AppState {
       // `keep`, and are never sent to the LLM (spec §4).
       const fresh = await selectNewItems(this.store, items);
       const signals = await this.triageFresh(fresh, false);
-      const report = await stageItems(this.store, items, { signals });
+      const report = await stageItems(this.store, items, { signals, project: this.importProject });
       this.lastImportReport = report;
       await this.loadCandidates();
       const known = report.skippedPromoted + report.skippedRejected;
       this.message = `linkedin: staged ${report.staged}, ${known} already known${report.errors.length ? `, ${report.errors.length} errors` : ''}`;
+      return report;
+    });
+  }
+
+  /**
+   * Résumé import (résumé spec §6): a .pdf/.docx → LLM parse → candidate inbox.
+   * The LLM is MANDATORY here — arbitrary résumé prose has no deterministic
+   * parse — so with no document reader or no provider the action refuses rather
+   * than falling back (spec §0 rule 2). The parse runs in this import-action
+   * layer, BEFORE `stageItems`; the staging boundary never calls an LLM.
+   * Returns null on cancel.
+   */
+  async importResume(): Promise<IngestReport | null> {
+    return this.guard(async () => {
+      if (!this.store || !this.platform) throw new Error('Open a record folder first');
+      // Guard (spec §6 step 1) — no silent or partial fallback.
+      if (!this.platform.docs || !this.llmReady || !this.llm) {
+        throw new Error('Résumé import needs a document reader and a configured LLM provider');
+      }
+      const picked = await openDialog({
+        multiple: false,
+        title: 'Select a résumé (PDF or DOCX)',
+        filters: [{ name: 'Résumé', extensions: ['pdf', 'docx'] }]
+      });
+      const path = Array.isArray(picked) ? picked[0] : picked;
+      if (!path) return null; // cancelled
+
+      const { text } = await this.platform.docs.extractText(path);
+      const model = this.llmConfig ? `${this.llmConfig.provider}:${this.llmConfig.model}` : undefined;
+      const { items, errors } = await parseResume(this.llm, text, { model });
+      // Dedupe before anything else (spec §6 step 4).
+      const fresh = await selectNewItems(this.store, items);
+      // Résumé items are record-grade like LinkedIn rows: prefilter-only, never
+      // sent to the triage model (spec §6 step 5). Every item stays `keep`.
+      const signals = await this.triageFresh(fresh, false);
+      const report = await stageItems(this.store, items, { signals, project: this.importProject });
+      // Surface the parser's drops (undated / unverifiable) next to any staging
+      // errors so the owner knows what was skipped and can add it by hand (§6.7).
+      report.errors.push(...errors);
+      this.lastImportReport = report;
+      await this.loadCandidates();
+      const known = report.skippedPromoted + report.skippedRejected;
+      this.message = `résumé: parsed ${items.length}, staged ${report.staged}, ${known} already known${errors.length ? `, ${errors.length} skipped` : ''}`;
       return report;
     });
   }

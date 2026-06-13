@@ -8,9 +8,11 @@
  *     rejected list (human said no), and the inbox itself (deterministic
  *     candidate filenames make re-staging idempotent).
  *
- * Every candidate is created `private: true` — ingested material defaults to
- * the most protective posture and only a deliberate human edit makes it
- * public (brutal-accuracy + private-by-default principles).
+ * Every candidate is created `private: true` by default — ingested material
+ * defaults to the most protective posture and only a deliberate human edit
+ * makes it public (brutal-accuracy + private-by-default principles). A caller
+ * may pass `private: false` to stage a batch public-from-the-start (e.g. a
+ * GitHub import the user has opted to keep open); the default never changes.
  */
 
 import type { RecordStore } from '../record';
@@ -36,19 +38,28 @@ function triageExtra(result: TriageResult): Record<string, unknown> {
  * provenance keys (`source`, `source_id`) ride the frontmatter pass-through;
  * no schema change is needed (plan §1). When a triage `result` is supplied it is
  * folded in as the `triage_*` keys (triage spec §6) — back-compatible: absent =
- * today's behavior. */
+ * today's behavior.
+ *
+ * `projectOverride` is the import-time project pre-selection: when non-empty it
+ * wins over the adapter's per-item `suggestedProject`, because an explicit human
+ * choice at import time is a stronger signal than a repo-derived guess. Either
+ * way it only seeds the candidate's `project` frontmatter — the inbox picker
+ * still defaults to it and the human confirms on promote (nothing auto-files). */
 export function rawItemToEntryInput(
   item: RawItem,
   ingestedAt: string = nowIso(),
-  result?: TriageResult
+  result?: TriageResult,
+  priv: boolean = true,
+  projectOverride?: string
 ): NewEntryInput {
+  const project = projectOverride?.trim() || item.suggestedProject;
   const extra: Record<string, unknown> = {
     source: item.source,
     source_id: item.sourceId,
     ingested_at: ingestedAt,
     reviewed: false,
     ...(item.url ? { source_url: item.url, links: [item.url] } : {}),
-    ...(item.suggestedProject ? { project: item.suggestedProject } : {}),
+    ...(project ? { project } : {}),
     ...(item.extraFrontmatter ?? {}),
     ...(result ? triageExtra(result) : {})
   };
@@ -56,7 +67,7 @@ export function rawItemToEntryInput(
     type: item.suggestedType ?? 'journal',
     title: item.title,
     date: item.date || undefined, // empty → makeEntry defaults to today
-    private: true, // always; review can open it up, never the reverse
+    private: priv, // defaults true; a caller may opt a batch public from the start
     tags: item.suggestedTags ?? [],
     body: item.body ?? '',
     extra
@@ -117,12 +128,21 @@ export async function selectNewItems(store: RecordStore, items: RawItem[]): Prom
  * `opts.signals` (triage spec §6) carries triage results keyed by
  * `provenanceKey`; a matching signal is folded onto the candidate's
  * frontmatter. Absent ⇒ today's behavior, untriaged.
+ *
+ * `opts.private` sets the staged candidates' `private` frontmatter. Omitted ⇒
+ * `true` (private-by-default); a caller may pass `false` to stage public.
+ *
+ * `opts.project` is the import-time project pre-selection (state §import): when
+ * non-empty it seeds every staged candidate's `project`, overriding any adapter
+ * `suggestedProject`. It only pre-fills the inbox picker — the human still
+ * confirms the project on promote.
  */
 export async function stageItems(
   store: RecordStore,
   items: RawItem[],
-  opts: { signals?: Map<string, TriageResult> } = {}
+  opts: { signals?: Map<string, TriageResult>; private?: boolean; project?: string } = {}
 ): Promise<IngestReport> {
+  const priv = opts.private ?? true;
   const { fresh, skippedPromoted, skippedRejected } = await categorize(store, items);
   const report: IngestReport = {
     fetched: items.length,
@@ -146,7 +166,9 @@ export async function stageItems(
       // Staging the same (source, source_id) twice overwrites the same
       // candidate file (deterministic filename), so an inbox re-run is
       // idempotent — counted as staged, not duplicated.
-      await store.stageCandidate(makeEntry(rawItemToEntryInput(item, nowIso(), signal)));
+      await store.stageCandidate(
+        makeEntry(rawItemToEntryInput(item, nowIso(), signal, priv, opts.project))
+      );
       report.staged++;
     } catch (e) {
       report.errors.push(`(${item.source}:${item.sourceId}) ${String(e)}`);

@@ -10,7 +10,8 @@
  * Reads go through the index (§6); writes always touch text first.
  */
 
-import type { Entry, Platform, Profile } from './types';
+import type { Entry, EntryFrontmatter, Platform, Profile } from './types';
+import type { RawItem } from './ingest/types';
 import {
   ensureSchema,
   rebuild,
@@ -48,8 +49,9 @@ import {
   type ReduceProposal
 } from './reduce';
 import type { Llm } from './types';
-// Import from the leaf module (not the index) to avoid a triage→record cycle.
-import { TRIAGE_KEYS } from './triage/types';
+// Import from the leaf modules (not the index) to avoid a triage→record cycle.
+import { TRIAGE_KEYS, type TriageRubric, type TriageSignal, type TriageResult } from './triage/types';
+import { prefilterItem } from './triage/prefilter';
 import { emptyProfile, parseProfile, PROFILE_PATH, serializeProfile } from './profile';
 import {
   PROFILE_BODY_PLACEHOLDER,
@@ -79,6 +81,39 @@ const REJECTED_FILE = `${INBOX_DIR}/rejected.tsv`;
 /** Stable dedupe key for a (source, source_id) pair. */
 export function provenanceKey(source: string, sourceId: string): string {
   return `${source}\t${sourceId}`;
+}
+
+/** The provenance key of one `rejected.tsv` row: its first two tab-separated
+ * columns (`source\tsource_id`), ignoring any trailing title column. */
+function keyOfRejectedLine(line: string): string {
+  const [source, sourceId] = line.split('\t');
+  return provenanceKey(source, sourceId ?? '');
+}
+
+/** Reconstruct just enough of a {@link RawItem} from a staged candidate to
+ * re-run the prefilter. The prefilter-relevant `meta` fields are written
+ * verbatim into the candidate body by the adapters (`From:` for Gmail, `State:`
+ * for GitHub, `Status:` for Asana), so they round-trip without a schema. */
+function candidateToRawItem(entry: Entry): RawItem {
+  const fm = entry.frontmatter as Record<string, unknown>;
+  const body = entry.body ?? '';
+  const meta: Record<string, string> = {};
+  const from = body.match(/^From:\s*(.+)$/im);
+  if (from) meta.from = from[1].trim();
+  const state = body.match(/^State:\s*([^.\n]+)/im);
+  if (state) meta.state = state[1].trim().toLowerCase();
+  const status = body.match(/^Status:\s*([^.\n]+)/im);
+  if (status) meta.status = status[1].trim().toLowerCase();
+  return {
+    source: typeof fm.source === 'string' ? fm.source : '',
+    sourceId: fm.source_id == null ? '' : String(fm.source_id),
+    title: typeof fm.title === 'string' ? fm.title : '',
+    date: typeof fm.date === 'string' ? fm.date : '',
+    // The same composed body staged at import time — the LLM triage view
+    // excerpts it for context (the prefilter ignores it).
+    body,
+    meta
+  };
 }
 
 /** Tiny non-crypto hash for collision-proofing candidate filenames. */
@@ -225,6 +260,102 @@ export class RecordStore {
     return out;
   }
 
+  /**
+   * Re-run the deterministic prefilter over every staged candidate and refold
+   * its `triage_*` signal in place, so a rubric change (e.g. broadened patterns)
+   * reaches the existing inbox — not just future imports. Prefilter-only: no
+   * network, no LLM, and `keep` here means only "no deterministic frivolous
+   * signal". A candidate is rewritten only when its signal/reason actually
+   * changes, so re-running is cheap and idempotent.
+   */
+  async retriageCandidates(
+    rubric: TriageRubric
+  ): Promise<{ total: number; updated: number; keep: number; frivolous: number }> {
+    const candidates = await this.listCandidates();
+    const at = new Date().toISOString();
+    let updated = 0;
+    let keep = 0;
+    let frivolous = 0;
+    for (const c of candidates) {
+      const { verdict, reason } = prefilterItem(candidateToRawItem(c), rubric);
+      // Prefilter-only: `unsure` folds to keep (triage spec §4), never frivolous.
+      const signal: TriageSignal = verdict === 'frivolous' ? 'frivolous' : 'keep';
+      if (signal === 'frivolous') frivolous++;
+      else keep++;
+      const fm = c.frontmatter as Record<string, unknown>;
+      if (fm.triage_signal === signal && fm.triage_reason === reason && fm.triage_source === 'prefilter') {
+        continue; // unchanged — leave the file untouched
+      }
+      const nextFm: Record<string, unknown> = {
+        ...fm,
+        triage_signal: signal,
+        triage_reason: reason,
+        triage_source: 'prefilter',
+        triage_at: at
+      };
+      delete nextFm.triage_model; // a prefilter verdict never carries a model
+      await this.writeEntryFile({ ...c, frontmatter: nextFm as EntryFrontmatter });
+      updated++;
+    }
+    return { total: candidates.length, updated, keep, frivolous };
+  }
+
+  /**
+   * Reconstruct staged candidates as {@link RawItem}s for an external triage
+   * pass (e.g. the LLM), each paired with its provenance key. Optionally limited
+   * to candidates currently carrying a given signal — the LLM pass only needs
+   * the `keep` set, since flagging already-frivolous items would be wasted work.
+   */
+  async candidateRawItems(opts: { signal?: TriageSignal } = {}): Promise<{ key: string; item: RawItem }[]> {
+    const out: { key: string; item: RawItem }[] = [];
+    for (const c of await this.listCandidates()) {
+      if (opts.signal && c.frontmatter.triage_signal !== opts.signal) continue;
+      const item = candidateToRawItem(c);
+      out.push({ key: provenanceKey(item.source, item.sourceId), item });
+    }
+    return out;
+  }
+
+  /**
+   * Fold a `provenanceKey → TriageResult` map (e.g. from {@link llmTriageItems})
+   * onto matching staged candidates, writing each changed file in place. Pure
+   * annotation — never promotes, rejects, moves, or deletes (triage spec §0): an
+   * item only gains/changes its `triage_*` signal and stays in the inbox.
+   */
+  async applyTriageResults(
+    results: Map<string, TriageResult>
+  ): Promise<{ updated: number; keep: number; frivolous: number }> {
+    let updated = 0;
+    let keep = 0;
+    let frivolous = 0;
+    for (const c of await this.listCandidates()) {
+      const fm = c.frontmatter as Record<string, unknown>;
+      const key = provenanceKey(String(fm.source ?? ''), fm.source_id == null ? '' : String(fm.source_id));
+      const r = results.get(key);
+      if (!r) continue;
+      if (r.signal === 'frivolous') frivolous++;
+      else keep++;
+      const unchanged =
+        fm.triage_signal === r.signal &&
+        fm.triage_reason === r.reason &&
+        fm.triage_source === r.source &&
+        fm.triage_model === r.model;
+      if (unchanged) continue;
+      const nextFm: Record<string, unknown> = {
+        ...fm,
+        triage_signal: r.signal,
+        triage_reason: r.reason,
+        triage_source: r.source,
+        triage_at: r.at
+      };
+      if (r.model) nextFm.triage_model = r.model;
+      else delete nextFm.triage_model;
+      await this.writeEntryFile({ ...c, frontmatter: nextFm as EntryFrontmatter });
+      updated++;
+    }
+    return { updated, keep, frivolous };
+  }
+
   /** Write a candidate file into the inbox. Deterministic filename per
    * (source, source_id), so re-staging the same item is idempotent. The entry
    * is stored in full canonical entry format — promote is then just a move. */
@@ -275,31 +406,46 @@ export class RecordStore {
     if (entry) {
       const src = entry.frontmatter.source;
       const sid = entry.frontmatter.source_id;
+      const title = entry.frontmatter.title;
       if (typeof src === 'string' && src && typeof sid === 'string' && sid) {
-        await this.appendRejected(src, sid);
+        await this.appendRejected(src, sid, typeof title === 'string' ? title : '');
       }
     }
     await this.platform.fs.removeFile(this.abs(candidatePath));
   }
 
-  /** Provenance keys (`source\tsource_id`) of every rejected item. */
+  /** Provenance keys (`source\tsource_id`) of every rejected item. Each row is
+   * `source\tsource_id[\ttitle]` — the optional third column is a human-readable
+   * label kept only to make the reject log learnable (triage refinement); the
+   * key is always the first two columns, so 2- and 3-column rows dedupe alike. */
   async rejectedKeys(): Promise<Set<string>> {
     const { fs } = this.platform;
     const abs = this.abs(REJECTED_FILE);
     if (!(await fs.exists(abs))) return new Set();
     const text = await fs.readTextFile(abs);
-    return new Set(text.split('\n').map((l) => l.trim()).filter(Boolean));
+    return new Set(
+      text
+        .split('\n')
+        .map((l) => l.trim())
+        .filter(Boolean)
+        .map(keyOfRejectedLine)
+    );
   }
 
-  private async appendRejected(source: string, sourceId: string): Promise<void> {
+  private async appendRejected(source: string, sourceId: string, title: string): Promise<void> {
     const { fs } = this.platform;
     await fs.mkdir(this.abs(INBOX_DIR));
     const abs = this.abs(REJECTED_FILE);
     const existing = (await fs.exists(abs)) ? await fs.readTextFile(abs) : '';
     const key = provenanceKey(source, sourceId);
-    const keys = new Set(existing.split('\n').map((l) => l.trim()).filter(Boolean));
+    const keys = new Set(
+      existing.split('\n').map((l) => l.trim()).filter(Boolean).map(keyOfRejectedLine)
+    );
     if (keys.has(key)) return;
-    const next = existing && !existing.endsWith('\n') ? `${existing}\n${key}\n` : `${existing}${key}\n`;
+    // Tabs/newlines would corrupt the TSV; collapse any whitespace run to a space.
+    const label = title.replace(/\s+/g, ' ').trim();
+    const row = label ? `${key}\t${label}` : key;
+    const next = existing && !existing.endsWith('\n') ? `${existing}\n${row}\n` : `${existing}${row}\n`;
     await fs.writeTextFile(abs, next);
   }
 

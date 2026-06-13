@@ -5,12 +5,17 @@
     candidate,
     projects,
     busy = false,
+    selected = false,
+    onselect,
     onpromote,
     onreject
   }: {
     candidate: Entry;
     projects: ProjectSummary[];
     busy?: boolean;
+    /** When `onselect` is provided, the card shows a selection checkbox. */
+    selected?: boolean;
+    onselect?: (path: string, checked: boolean) => void;
     onpromote: (path: string, project: string) => void;
     onreject: (path: string, title: string) => void;
   } = $props();
@@ -18,6 +23,21 @@
   const fm = $derived(candidate.frontmatter);
   const source = $derived(typeof fm.source === 'string' ? fm.source : '');
   const sourceUrl = $derived(typeof fm.source_url === 'string' ? fm.source_url : '');
+
+  // PR change size rides the `change_size` frontmatter pass-through (GitHub
+  // adapter). Read it defensively — it's an unknown nested object, present only
+  // on PR candidates. Null ⇒ no badge.
+  const changeSize = $derived.by(() => {
+    const cs = fm.change_size;
+    if (typeof cs !== 'object' || cs === null) return null;
+    const rec = cs as Record<string, unknown>;
+    const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+    return {
+      additions: num(rec.additions),
+      deletions: num(rec.deletions),
+      changedFiles: num(rec.changed_files)
+    };
+  });
 
   // Triage signal (spec §6): a `frivolous` candidate shows a small muted badge
   // with its reason and which stage decided. Absence ⇒ untriaged ⇒ shows normally.
@@ -38,7 +58,21 @@
   });
 </script>
 
-<article class="rounded-lg border border-[var(--color-line)] bg-white p-4 shadow-sm dark:bg-[#1e1f24] dark:shadow-none">
+<article
+  class="flex gap-3 rounded-lg border bg-white p-4 shadow-sm dark:bg-[#1e1f24] dark:shadow-none {selected
+    ? 'border-[var(--color-accent)] ring-1 ring-[var(--color-accent)]'
+    : 'border-[var(--color-line)]'}"
+>
+  {#if onselect}
+    <input
+      type="checkbox"
+      class="mt-1 h-4 w-4 shrink-0 accent-[var(--color-accent)]"
+      checked={selected}
+      aria-label="Select “{fm.title}”"
+      onchange={(e) => onselect(candidate.path!, e.currentTarget.checked)}
+    />
+  {/if}
+  <div class="min-w-0 flex-1">
   <div class="flex flex-wrap items-center gap-2">
     <span class="rounded bg-[var(--color-accent)]/10 px-1.5 py-0.5 text-xs font-medium text-[var(--color-accent)]">
       {fm.type}
@@ -53,6 +87,16 @@
       <a href={sourceUrl} target="_blank" rel="noreferrer" class="text-xs text-[var(--color-accent)] hover:underline">
         source ↗
       </a>
+    {/if}
+    {#if changeSize}
+      <span
+        class="rounded bg-gray-100 px-1.5 py-0.5 font-mono text-xs text-[var(--color-muted)] dark:bg-white/10"
+        title="{changeSize.additions} additions, {changeSize.deletions} deletions across {changeSize.changedFiles} file{changeSize.changedFiles === 1 ? '' : 's'}"
+      >
+        <span class="text-green-700 dark:text-green-400">+{changeSize.additions}</span>
+        <span class="text-[var(--color-private)]">−{changeSize.deletions}</span>
+        <span class="text-[var(--color-muted)]">· {changeSize.changedFiles} file{changeSize.changedFiles === 1 ? '' : 's'}</span>
+      </span>
     {/if}
     {#if isFrivolous}
       <span
@@ -102,5 +146,6 @@
         Promote
       </button>
     </div>
+  </div>
   </div>
 </article>

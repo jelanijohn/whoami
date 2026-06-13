@@ -4,6 +4,7 @@
 
 export {
   asStr,
+  asNum,
   get,
   isoDate,
   GITHUB_TOKEN_NAME,
@@ -13,12 +14,12 @@ export {
   type RawItem,
   type IngestReport
 } from './types';
-export { getJson, bearer } from './http';
+export { getJson, postJson, bearer } from './http';
 export {
   apiBase,
+  graphqlUrl,
   githubSearchQuery,
-  repoFromApiUrl,
-  mapGithubIssue,
+  mapGithubGraphqlNode,
   fetchGithub,
   validateGithub,
   type GithubFetchOpts
@@ -47,4 +48,17 @@ export {
   mapLinkedinEducation,
   importLinkedinArchive
 } from './linkedin';
+export {
+  RESUME_SOURCE,
+  RESUME_TYPES,
+  RESUME_TOKEN_BUDGET,
+  buildResumePrompt,
+  parseResumeItems,
+  chunkResumeText,
+  parseResume,
+  type ResumeType,
+  type ResumeItem,
+  type ParseResumeOpts,
+  type ParseResumeResult
+} from './resume';
 export { rawItemToEntryInput, stageItems, selectNewItems } from './pipeline';

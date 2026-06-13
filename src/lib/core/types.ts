@@ -196,6 +196,24 @@ export interface Llm {
   complete(req: LlmCompletionRequest): Promise<string>;
 }
 
+/** A binary document parsed to plain text (résumé import spec §3). */
+export interface ExtractedDoc {
+  text: string;
+  kind: 'pdf' | 'docx';
+  /** PDF only, advisory. */
+  pageCount?: number;
+}
+
+/** Read a .pdf/.docx file and return its plain text. Binary parsing is
+ * platform-specific and is deliberately kept out of the core (the core résumé
+ * module receives `text` and never imports pdf.js/mammoth). Implementations:
+ *   Tauri webview — pdf.js (Mozilla) for PDF, mammoth for DOCX;
+ *   Node test/CLI — pdf-parse for PDF, mammoth for DOCX.
+ * Absent on a platform ⇒ résumé import is disabled with a clear message. */
+export interface DocExtract {
+  extractText(path: string): Promise<ExtractedDoc>;
+}
+
 /**
  * The full platform bundle handed to the core. The Tauri app builds one from
  * its plugins; tests build one from node primitives.
@@ -216,4 +234,7 @@ export interface Platform {
   /** Optional — present when an LLM provider is configured (plan §3). Absent is
    * normal: the deterministic rollup and the whole app work without it. */
   llm?: Llm;
+  /** Optional — present when binary document parsing is wired (résumé import
+   * spec §3). Absent ⇒ résumé import is disabled with a clear message. */
+  docs?: DocExtract;
 }

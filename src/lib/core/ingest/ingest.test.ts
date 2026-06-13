@@ -8,10 +8,10 @@ import { findBySource } from '../index-db';
 import { RECORD_GITIGNORE } from '../templates';
 import type { Platform } from '../types';
 import {
-  mapGithubIssue,
+  mapGithubGraphqlNode,
   githubSearchQuery,
   apiBase,
-  repoFromApiUrl,
+  graphqlUrl,
   selectDiscussion,
   composeDiscussion,
   fetchGithub
@@ -29,51 +29,67 @@ import {
 import { rawItemToEntryInput, stageItems } from './pipeline';
 import type { RawItem } from './types';
 
-// --- GitHub mapper (fixtures ported from waid's provider/github.rs tests) ---
+// --- GitHub mapper (GraphQL `search` nodes — see github-graphql-migration.md) -
 
-const GH_PR = {
-  id: 9876,
+const GQL_PR = {
+  __typename: 'PullRequest',
+  databaseId: 9876,
+  number: 12,
   title: 'Add provider dispatch',
-  html_url: 'https://github.com/acme/waid/pull/12',
-  state: 'closed',
-  created_at: '2026-05-20T09:00:00Z',
-  closed_at: '2026-06-01T10:00:00Z',
-  updated_at: '2026-06-01T10:00:00Z',
-  assignee: { login: 'jelani' },
-  repository_url: 'https://api.github.com/repos/acme/waid',
-  pull_request: {
-    url: 'https://api.github.com/repos/acme/waid/pulls/12',
-    merged_at: '2026-06-01T10:00:00Z'
-  }
+  url: 'https://github.com/acme/waid/pull/12',
+  state: 'MERGED',
+  createdAt: '2026-05-20T09:00:00Z',
+  closedAt: '2026-06-01T10:00:00Z',
+  mergedAt: '2026-06-01T10:00:00Z',
+  additions: 123,
+  deletions: 45,
+  changedFiles: 7,
+  repository: { nameWithOwner: 'acme/waid' }
+};
+
+const GQL_ISSUE = {
+  __typename: 'Issue',
+  databaseId: 1,
+  number: 3,
+  title: 'bug',
+  url: 'https://github.com/acme/waid/issues/3',
+  state: 'OPEN',
+  createdAt: '2026-01-02T00:00:00Z',
+  closedAt: null,
+  repository: { nameWithOwner: 'acme/waid' }
 };
 
 describe('github adapter', () => {
-  it('maps a merged PR', () => {
-    const item = mapGithubIssue(GH_PR);
+  it('maps a merged PR with change size', () => {
+    const item = mapGithubGraphqlNode(GQL_PR);
     expect(item.source).toBe('github');
-    expect(item.sourceId).toBe('9876');
+    expect(item.sourceId).toBe('9876'); // databaseId, the REST numeric id
     expect(item.title).toBe('Add provider dispatch');
     expect(item.url).toBe('https://github.com/acme/waid/pull/12');
-    expect(item.date).toBe('2026-06-01'); // closed_at wins
+    expect(item.date).toBe('2026-06-01'); // closedAt wins
     expect(item.meta?.type).toBe('PR');
-    expect(item.meta?.state).toBe('merged');
+    expect(item.meta?.state).toBe('merged'); // MERGED → merged, native
     expect(item.meta?.repo).toBe('acme/waid');
     expect(item.suggestedProject).toBe('acme-waid');
+    // Change size rides extraFrontmatter (pass-through) + a body-header line.
+    expect(item.extraFrontmatter?.change_size).toEqual({
+      additions: 123,
+      deletions: 45,
+      changed_files: 7
+    });
+    expect(item.extraFrontmatter?.merged_at).toBe('2026-06-01');
+    expect(item.body).toContain('Changes: +123 −45 across 7 files.');
   });
 
-  it('maps a plain issue as Issue and tolerates missing fields', () => {
-    const item = mapGithubIssue({
-      id: 1,
-      title: 'bug',
-      html_url: 'https://github.com/acme/waid/issues/3',
-      state: 'open',
-      created_at: '2026-01-02T00:00:00Z',
-      repository_url: 'https://api.github.com/repos/acme/waid'
-    });
+  it('maps a plain issue as Issue, no change size, tolerates missing fields', () => {
+    const item = mapGithubGraphqlNode(GQL_ISSUE);
     expect(item.meta?.type).toBe('Issue');
-    expect(item.meta?.state).toBe('open');
-    expect(item.date).toBe('2026-01-02'); // falls back to created_at
-    expect(mapGithubIssue({}).sourceId).toBe('');
+    expect(item.meta?.state).toBe('open'); // OPEN → open
+    expect(item.date).toBe('2026-01-02'); // falls back to createdAt
+    // Issues carry no change_size and no Changes: line.
+    expect(item.extraFrontmatter).toBeUndefined();
+    expect(item.body).not.toContain('Changes:');
+    expect(mapGithubGraphqlNode({}).sourceId).toBe('');
   });
 
   it('builds search queries', () => {
@@ -85,24 +101,24 @@ describe('github adapter', () => {
     expect(githubSearchQuery({ user: 'j', until: '2020-01-01' })).toBe('author:j created:<=2020-01-01');
   });
 
-  it('derives api base and repo', () => {
+  it('derives REST and GraphQL endpoints', () => {
     expect(apiBase()).toBe('https://api.github.com');
     expect(apiBase('https://ghe.corp/')).toBe('https://ghe.corp/api/v3');
-    expect(repoFromApiUrl('https://api.github.com/repos/acme/waid')).toBe('acme/waid');
-    expect(repoFromApiUrl('https://api.github.com/nope')).toBeUndefined();
+    expect(graphqlUrl()).toBe('https://api.github.com/graphql');
+    expect(graphqlUrl('https://ghe.corp/')).toBe('https://ghe.corp/api/graphql');
   });
 
-  it('maps the description block when body is present (change A)', () => {
-    const item = mapGithubIssue({ ...GH_PR, body: '  Adds dispatch.\n\nNotes.  ' });
+  it('maps the description block when body is present (verbatim)', () => {
+    const item = mapGithubGraphqlNode({ ...GQL_PR, body: '  Adds dispatch.\n\nNotes.  ' });
     expect(item.body).toContain('State: merged.');
     expect(item.body).toContain('--- Description ---\nAdds dispatch.\n\nNotes.');
     // Trimmed, and never preceded by leftover whitespace.
     expect(item.body!.endsWith('Notes.')).toBe(true);
   });
 
-  it('omits the description block when body is absent or blank (unchanged)', () => {
-    expect(mapGithubIssue(GH_PR).body).not.toContain('--- Description ---');
-    expect(mapGithubIssue({ ...GH_PR, body: '   ' }).body).not.toContain('--- Description ---');
+  it('omits the description block when body is absent or blank', () => {
+    expect(mapGithubGraphqlNode(GQL_PR).body).not.toContain('--- Description ---');
+    expect(mapGithubGraphqlNode({ ...GQL_PR, body: '   ' }).body).not.toContain('--- Description ---');
   });
 });
 
@@ -188,9 +204,11 @@ describe('composeDiscussion', () => {
   });
 });
 
-// --- GitHub discussion: fetchGithub fetch path (fake Http, §3) --------------
+// --- GitHub fetch path (fake Http, GraphQL listing + REST discussion) -------
 
-/** Route a fake Http by URL substring → canned JSON (or a thrown 500). */
+/** Route a fake Http by URL substring → canned JSON (or a thrown 500). The
+ * GraphQL listing matches `/graphql`; REST discussion endpoints match their
+ * path. The method/body are ignored — single-page payloads only. */
 function fakeHttp(routes: Array<{ match: string; json?: unknown; status?: number }>): Http {
   return {
     async request(req: HttpRequest): Promise<HttpResponse> {
@@ -204,23 +222,32 @@ function fakeHttp(routes: Array<{ match: string; json?: unknown; status?: number
   };
 }
 
+/** Wrap search nodes in the GraphQL `search` envelope. */
+function gqlSearch(nodes: unknown[], hasNextPage = false, endCursor: string | null = null): unknown {
+  return { data: { search: { pageInfo: { hasNextPage, endCursor }, nodes } } };
+}
+
 describe('fetchGithub with fetchDiscussion', () => {
-  const searchItem = {
-    id: 12,
+  const searchNode = {
+    __typename: 'PullRequest',
+    databaseId: 12,
     number: 12,
     title: 'Add dispatch',
-    html_url: 'https://github.com/acme/waid/pull/12',
-    state: 'closed',
-    created_at: '2024-01-15T00:00:00Z',
-    closed_at: '2024-02-01T00:00:00Z',
+    url: 'https://github.com/acme/waid/pull/12',
+    state: 'MERGED',
+    createdAt: '2024-01-15T00:00:00Z',
+    closedAt: '2024-02-01T00:00:00Z',
+    mergedAt: '2024-02-01T00:00:00Z',
+    additions: 1,
+    deletions: 0,
+    changedFiles: 1,
     body: 'Adds dispatch.',
-    repository_url: 'https://api.github.com/repos/acme/waid',
-    pull_request: { url: 'https://api.github.com/repos/acme/waid/pulls/12', merged_at: '2024-02-01T00:00:00Z' }
+    repository: { nameWithOwner: 'acme/waid' }
   };
 
-  it('appends description + self discussion from the three endpoints', async () => {
+  it('appends description + self discussion from the three REST endpoints', async () => {
     const http = fakeHttp([
-      { match: '/search/issues', json: { items: [searchItem] } },
+      { match: '/graphql', json: gqlSearch([searchNode]) },
       {
         match: '/issues/12/comments',
         json: [{ user: { login: 'jelani' }, created_at: '2024-01-16T00:00:00Z', body: 'mine' }]
@@ -246,7 +273,7 @@ describe('fetchGithub with fetchDiscussion', () => {
 
   it('keeps the description and completes when a discussion endpoint fails (per-item resilience)', async () => {
     const http = fakeHttp([
-      { match: '/search/issues', json: { items: [searchItem] } },
+      { match: '/graphql', json: gqlSearch([searchNode]) },
       { match: '/issues/12/comments', status: 500 }
     ]);
     const items = await fetchGithub(http, { token: 't', user: 'jelani', fetchDiscussion: true });
@@ -256,22 +283,24 @@ describe('fetchGithub with fetchDiscussion', () => {
   });
 
   it('skips pulls/* endpoints for a non-PR issue', async () => {
-    const issueItem = {
-      id: 7,
+    const issueNode = {
+      __typename: 'Issue',
+      databaseId: 7,
       number: 7,
       title: 'a bug',
-      html_url: 'https://github.com/acme/waid/issues/7',
-      state: 'open',
-      created_at: '2024-01-10T00:00:00Z',
+      url: 'https://github.com/acme/waid/issues/7',
+      state: 'OPEN',
+      createdAt: '2024-01-10T00:00:00Z',
+      closedAt: null,
       body: 'broken',
-      repository_url: 'https://api.github.com/repos/acme/waid'
+      repository: { nameWithOwner: 'acme/waid' }
     };
     const calls: string[] = [];
     const http: Http = {
       async request(req) {
         calls.push(req.url);
-        const text = req.url.includes('/search/issues')
-          ? JSON.stringify({ items: [issueItem] })
+        const text = req.url.includes('/graphql')
+          ? JSON.stringify(gqlSearch([issueNode]))
           : JSON.stringify([{ user: { login: 'jelani' }, created_at: '2024-01-11T00:00:00Z', body: 'note' }]);
         return { status: 200, ok: true, headers: {}, text };
       }
@@ -280,6 +309,80 @@ describe('fetchGithub with fetchDiscussion', () => {
     expect(items[0].body).toContain('[2024-01-11] note');
     expect(calls.some((u) => u.includes('/pulls/'))).toBe(false);
     expect(calls.some((u) => u.includes('/issues/7/comments'))).toBe(true);
+  });
+});
+
+describe('fetchGithub GraphQL listing', () => {
+  const node = (n: number) => ({
+    __typename: 'PullRequest',
+    databaseId: n,
+    number: n,
+    title: `PR ${n}`,
+    url: `https://github.com/acme/waid/pull/${n}`,
+    state: 'MERGED',
+    createdAt: '2024-01-15T00:00:00Z',
+    closedAt: '2024-02-01T00:00:00Z',
+    mergedAt: '2024-02-01T00:00:00Z',
+    additions: n,
+    deletions: 0,
+    changedFiles: 1,
+    repository: { nameWithOwner: 'acme/waid' }
+  });
+
+  it('posts to the GraphQL endpoint with the query in variables, not the URL', async () => {
+    let captured: HttpRequest | undefined;
+    const http: Http = {
+      async request(req) {
+        captured = req;
+        return { status: 200, ok: true, headers: {}, text: JSON.stringify(gqlSearch([node(1)])) };
+      }
+    };
+    const items = await fetchGithub(http, { token: 't', user: 'jelani', repo: 'acme/waid' });
+    expect(items).toHaveLength(1);
+    expect(captured?.method).toBe('POST');
+    expect(captured?.url).toBe('https://api.github.com/graphql');
+    const sent = JSON.parse(captured!.body!);
+    expect(sent.variables.q).toBe('author:jelani repo:acme/waid'); // un-encoded qualifier syntax
+    expect(captured!.url).not.toContain('author%3A'); // q is NOT in the URL
+  });
+
+  it('follows the cursor across pages and stops at the cap', async () => {
+    const cursors: Array<string | null> = [];
+    const http: Http = {
+      async request(req) {
+        const sent = JSON.parse(req.body!);
+        cursors.push(sent.variables.cursor);
+        // Page 1: first 100 → hasNextPage. Page 2: remaining → done.
+        const page = sent.variables.cursor === null
+          ? gqlSearch(Array.from({ length: 100 }, (_, i) => node(i + 1)), true, 'CUR1')
+          : gqlSearch(Array.from({ length: 100 }, (_, i) => node(i + 101)), false, null);
+        return { status: 200, ok: true, headers: {}, text: JSON.stringify(page) };
+      }
+    };
+    const items = await fetchGithub(http, { token: 't', user: 'jelani', limit: 150 });
+    expect(items).toHaveLength(150); // capped, even though 200 were available
+    expect(cursors).toEqual([null, 'CUR1']); // followed endCursor on the 2nd call
+  });
+
+  it('returns [] for empty results', async () => {
+    const http = fakeHttp([{ match: '/graphql', json: gqlSearch([]) }]);
+    expect(await fetchGithub(http, { token: 't', user: 'jelani' })).toEqual([]);
+  });
+
+  it('surfaces a GraphQL error (HTTP 200 with a top-level errors array)', async () => {
+    const http: Http = {
+      async request() {
+        return {
+          status: 200,
+          ok: true,
+          headers: {},
+          text: JSON.stringify({ errors: [{ message: 'Something went wrong' }], data: null })
+        };
+      }
+    };
+    await expect(fetchGithub(http, { token: 't', user: 'jelani' })).rejects.toThrow(
+      /GitHub GraphQL error: Something went wrong/
+    );
   });
 });
 
@@ -464,6 +567,34 @@ describe('staging pipeline', () => {
     expect(input.extra?.project).toBe('acme-waid');
     expect(input.extra?.links).toEqual(['https://github.com/acme/waid/pull/1']);
     expect(input.extra?.ingested_at).toBe('2026-06-10T00:00:00.000Z');
+  });
+
+  it('honors the private override (default true, opt-out false)', async () => {
+    // The pure mapper: priv arg overrides the protective default.
+    expect(rawItemToEntryInput(item(1)).private).toBe(true);
+    expect(rawItemToEntryInput(item(1), undefined, undefined, false).private).toBe(false);
+
+    // stageItems threads it onto the staged candidates.
+    await stageItems(store, [item(1)], { private: false });
+    const candidates = await store.listCandidates();
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0].frontmatter.private).toBe(false);
+  });
+
+  it('honors the import-time project override (wins over suggestedProject)', async () => {
+    // The pure mapper: a non-empty override replaces the adapter's suggestion;
+    // blank/whitespace falls back to it.
+    expect(rawItemToEntryInput(item(1)).extra?.project).toBe('acme-waid');
+    expect(rawItemToEntryInput(item(1), undefined, undefined, true, 'big-rewrite').extra?.project).toBe(
+      'big-rewrite'
+    );
+    expect(rawItemToEntryInput(item(1), undefined, undefined, true, '  ').extra?.project).toBe('acme-waid');
+
+    // stageItems threads it onto every staged candidate.
+    await stageItems(store, [item(1)], { project: 'big-rewrite' });
+    const candidates = await store.listCandidates();
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0].frontmatter.project).toBe('big-rewrite');
   });
 
   it('stages, dedupes, promotes, and rejects', async () => {

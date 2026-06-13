@@ -10,9 +10,18 @@
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { access, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { extname, join } from 'node:path';
 import BetterSqlite3 from 'better-sqlite3';
-import type { Database, FileSystem, GitRunner, Http, Platform, Row, Secrets } from './types';
+import type {
+  Database,
+  DocExtract,
+  FileSystem,
+  GitRunner,
+  Http,
+  Platform,
+  Row,
+  Secrets
+} from './types';
 
 const nodeFs: FileSystem = {
   async readTextFile(path) {
@@ -118,6 +127,34 @@ class NodeDatabase implements Database {
   }
 }
 
+/**
+ * DocExtract seam (résumé import spec §3): pdf-parse for PDF, mammoth for DOCX.
+ * The binary parsers are imported lazily so they never burden the common
+ * (non-résumé) code paths, and so the core never statically pulls them in.
+ */
+const nodeDocs: DocExtract = {
+  async extractText(path) {
+    const ext = extname(path).toLowerCase();
+    if (ext === '.pdf') {
+      const data = await readFile(path);
+      const { PDFParse } = await import('pdf-parse');
+      const parser = new PDFParse({ data: new Uint8Array(data) });
+      try {
+        const result = await parser.getText();
+        return { text: result.text, kind: 'pdf', pageCount: result.total };
+      } finally {
+        await parser.destroy();
+      }
+    }
+    if (ext === '.docx') {
+      const mammoth = await import('mammoth');
+      const { value } = await mammoth.extractRawText({ path });
+      return { text: value, kind: 'docx' };
+    }
+    throw new Error(`Unsupported résumé format "${ext || path}" — expected .pdf or .docx`);
+  }
+};
+
 async function sha256(content: string): Promise<string> {
   return createHash('sha256').update(content, 'utf8').digest('hex');
 }
@@ -132,6 +169,7 @@ export function createNodePlatform(dbPath: string): Platform {
     hash: sha256,
     joinPath: (...segments: string[]) => join(...segments),
     http: nodeHttp,
-    secrets: new EnvSecrets()
+    secrets: new EnvSecrets(),
+    docs: nodeDocs
   };
 }

@@ -23,6 +23,7 @@
 
     "fs:default",
     { "identifier": "fs:allow-read-text-file", "allow": [{ "path": "$HOME/**" }] },
+    { "identifier": "fs:allow-read-file", "allow": [{ "path": "$HOME/**" }] },
     { "identifier": "fs:allow-write-text-file", "allow": [{ "path": "$HOME/**" }] },
     { "identifier": "fs:allow-mkdir", "allow": [{ "path": "$HOME/**" }] },
     { "identifier": "fs:allow-remove", "allow": [{ "path": "$HOME/**" }] },

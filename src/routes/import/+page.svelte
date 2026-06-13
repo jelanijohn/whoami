@@ -132,6 +132,29 @@
     </label>
   </section>
 
+  <!-- Project pre-selection (applies to every import) -->
+  <section class="space-y-2 border-t border-[var(--color-line)] pt-5">
+    <h2 class="text-sm font-semibold">Project</h2>
+    <p class="text-xs text-[var(--color-muted)]">
+      Pre-assign everything this import stages to a project. It only pre-fills the
+      <a href="/inbox" class="text-[var(--color-accent)] hover:underline">Inbox</a> picker — you still
+      confirm (or change) the project when you promote each item, and a choice here overrides a
+      source's own guess (e.g. the GitHub repo).
+    </p>
+    <label class="flex flex-col text-xs text-[var(--color-muted)]">
+      Assign imported items to
+      <select bind:value={app.importProject} class="{inputCls} w-72">
+        <option value="">— none (use each source's suggestion) —</option>
+        {#each app.projects as p (p.slug)}
+          <option value={p.slug}>{p.entry.frontmatter.title}</option>
+        {/each}
+        {#if app.importProject && !app.projects.some((p) => p.slug === app.importProject)}
+          <option value={app.importProject}>{app.importProject}</option>
+        {/if}
+      </select>
+    </label>
+  </section>
+
   <!-- GitHub -->
   <section class="space-y-2 border-t border-[var(--color-line)] pt-5">
     <h2 class="text-sm font-semibold">GitHub</h2>
@@ -163,6 +186,10 @@
       </label>
     </div>
     <div class="flex flex-wrap items-end gap-4">
+      <label class="flex items-center gap-2 text-xs text-[var(--color-muted)]">
+        <input type="checkbox" bind:checked={app.importSettings.github.importPrivate} />
+        Mark imported entries private
+      </label>
       <label class="flex items-center gap-2 text-xs text-[var(--color-muted)]">
         <input type="checkbox" bind:checked={app.importSettings.github.fetchDiscussion} />
         Fetch PR/issue discussion
@@ -251,6 +278,42 @@
     </p>
     <button class={runCls} disabled={app.busy} onclick={() => app.importLinkedin()}>
       Choose CSVs &amp; import…
+    </button>
+  </section>
+
+  <!-- Résumé -->
+  <section class="space-y-2 border-t border-[var(--color-line)] pt-5">
+    <h2 class="text-sm font-semibold">Résumé (PDF/DOCX)</h2>
+    <p class="text-xs text-[var(--color-muted)]">
+      Turn a résumé or CV into a batch of dated candidates — roles, projects, education, and dated
+      wins — so you promote the real ones with one click each instead of retyping a career. Every
+      item carries the verbatim résumé span it came from, so you can see at a glance that nothing was
+      invented. Skills aren't imported here (they belong on your profile, not the timeline).
+    </p>
+    <p class="text-xs text-[var(--color-muted)]">
+      Unlike the other sources, this one needs an LLM to read the prose — there is no local fallback.
+      {#if app.llmConfig?.provider === 'anthropic'}
+        <span class="block text-amber-700 dark:text-amber-300">
+          The résumé text is sent to <strong>Anthropic</strong> to be parsed — content leaves your
+          machine. A résumé is designed to be handed to strangers, but the choice is yours.
+        </span>
+      {/if}
+    </p>
+    {#if !app.llmReady || !app.docsAvailable}
+      <p class="text-xs text-[var(--color-private)]">
+        {#if !app.docsAvailable}
+          Document reading isn't available in this build yet.
+        {:else}
+          Configure an AI provider in Data → AI provider first.
+        {/if}
+      </p>
+    {/if}
+    <button
+      class={runCls}
+      disabled={app.busy || !app.llmReady || !app.docsAvailable}
+      onclick={() => app.importResume()}
+    >
+      Choose a résumé &amp; import…
     </button>
   </section>
 

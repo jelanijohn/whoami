@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createNodePlatform } from './platform-node';
-import { RecordStore } from './record';
+import { RecordStore, provenanceKey } from './record';
 import { makeEntry } from './entry';
+import { DEFAULT_RUBRIC, type TriageResult } from './triage/types';
 import type { Llm, LlmCompletionRequest, Platform } from './types';
 
 let root: string;
@@ -236,6 +237,148 @@ describe('project dimension (plan §2)', () => {
     const staged = await store.stageCandidate(candidate);
     const promoted = await store.promoteCandidate(staged.path!, { project: '' });
     expect(promoted.frontmatter.project).toBeUndefined();
+  });
+});
+
+describe('reject log carries a learnable title (triage refinement)', () => {
+  const REJECTED = join('.inbox', 'rejected.tsv');
+  const stageAndReject = async (sourceId: string, title: string) => {
+    const candidate = makeEntry({
+      type: 'journal',
+      title,
+      extra: { source: 'github', source_id: sourceId, reviewed: false }
+    });
+    const staged = await store.stageCandidate(candidate);
+    await store.rejectCandidate(staged.path!);
+  };
+
+  it('records source\\tsource_id\\ttitle, and dedupes on the key alone', async () => {
+    await stageAndReject('gh-1', 'Bump axios   from 1 to 2'); // whitespace run collapses
+    await stageAndReject('gh-2', 'Investigate flaky test');
+    const tsv = await readFile(join(root, REJECTED), 'utf8');
+    expect(tsv).toContain('github\tgh-1\tBump axios from 1 to 2');
+    expect(tsv).toContain('github\tgh-2\tInvestigate flaky test');
+    // The key (first two columns) still drives dedupe + re-propose suppression.
+    const keys = await store.rejectedKeys();
+    expect(keys.has('github\tgh-1')).toBe(true);
+    expect(keys.has('github\tgh-2')).toBe(true);
+  });
+
+  it('rejectedKeys reads a legacy 2-column row identically to a titled one', async () => {
+    await mkdir(join(root, '.inbox'), { recursive: true });
+    await writeFile(join(root, REJECTED), 'github\told-1\ngithub\tnew-1\tA real title\n');
+    const keys = await store.rejectedKeys();
+    expect(keys).toEqual(new Set(['github\told-1', 'github\tnew-1']));
+  });
+});
+
+describe('retriageCandidates re-applies the prefilter to the existing inbox', () => {
+  it('reclassifies a stale candidate and reconstructs meta from the body', async () => {
+    // Stage a branch-promotion PR whose stored signal is stale `keep` (as if it
+    // were imported before the promotion pattern existed). The body carries the
+    // `State:` line the adapter writes — the only place state lives.
+    const stale = makeEntry({
+      type: 'journal',
+      title: 'prod < dev merge (load time speed up)',
+      body: 'GitHub PR in acme/web.\nState: merged.',
+      extra: {
+        source: 'github',
+        source_id: 'gh-promo',
+        triage_signal: 'keep',
+        triage_reason: 'shipped (merged)',
+        triage_source: 'prefilter',
+        triage_at: '2020-01-01T00:00:00.000Z'
+      }
+    });
+    // A genuinely substantive PR already carrying the correct `keep` signal —
+    // re-triage must recognise it as unchanged and leave the file alone.
+    const real = makeEntry({
+      type: 'journal',
+      title: 'Add provider dispatch',
+      body: 'GitHub PR in acme/web.\nState: merged.',
+      extra: {
+        source: 'github',
+        source_id: 'gh-real',
+        triage_signal: 'keep',
+        triage_reason: 'shipped (merged)',
+        triage_source: 'prefilter',
+        triage_at: '2020-01-01T00:00:00.000Z'
+      }
+    });
+    await store.stageCandidate(stale);
+    await store.stageCandidate(real);
+
+    const res = await store.retriageCandidates(DEFAULT_RUBRIC);
+    expect(res.total).toBe(2);
+    expect(res.frivolous).toBe(1);
+    expect(res.keep).toBe(1);
+    expect(res.updated).toBe(1); // only the stale promotion flips
+
+    const after = await store.listCandidates();
+    const promo = after.find((c) => c.frontmatter.source_id === 'gh-promo')!;
+    expect(promo.frontmatter.triage_signal).toBe('frivolous');
+    expect(promo.frontmatter.triage_at).not.toBe('2020-01-01T00:00:00.000Z');
+    const kept = after.find((c) => c.frontmatter.source_id === 'gh-real')!;
+    expect(kept.frontmatter.triage_signal).toBe('keep');
+    expect(kept.frontmatter.triage_at).toBe('2020-01-01T00:00:00.000Z'); // untouched
+  });
+});
+
+describe('candidateRawItems + applyTriageResults (inbox LLM triage plumbing)', () => {
+  const merged = (sourceId: string, title: string) =>
+    makeEntry({
+      type: 'journal',
+      title,
+      body: 'GitHub PR in acme/web.\nState: merged.',
+      extra: {
+        source: 'github',
+        source_id: sourceId,
+        triage_signal: 'keep',
+        triage_reason: 'shipped (merged)',
+        triage_source: 'prefilter'
+      }
+    });
+
+  it('reconstructs raw items (meta from body) for the keep set only', async () => {
+    await store.stageCandidate(merged('gh-a', 'Add provider dispatch'));
+    const frivolous = makeEntry({
+      type: 'journal',
+      title: 'bump deps',
+      body: 'GitHub PR in acme/web.\nState: merged.',
+      extra: { source: 'github', source_id: 'gh-friv', triage_signal: 'frivolous', triage_source: 'prefilter' }
+    });
+    await store.stageCandidate(frivolous);
+
+    const targets = await store.candidateRawItems({ signal: 'keep' });
+    expect(targets.map((t) => t.item.title)).toEqual(['Add provider dispatch']); // skips frivolous
+    expect(targets[0].item.meta?.state).toBe('merged'); // recovered from the body
+    expect(targets[0].key).toBe(provenanceKey('github', 'gh-a'));
+  });
+
+  it('folds verdicts in place, flipping only flagged items — nothing leaves the inbox', async () => {
+    await store.stageCandidate(merged('gh-a', 'Add provider dispatch'));
+    await store.stageCandidate(merged('gh-b', 'tweak landing copy'));
+
+    const at = '2026-06-13T00:00:00.000Z';
+    const results = new Map<string, TriageResult>([
+      [
+        provenanceKey('github', 'gh-b'),
+        { signal: 'frivolous', reason: 'low-signal copy tweak', source: 'llm', model: 'ollama:llama3.2', at }
+      ]
+      // gh-a deliberately absent → must stay keep, untouched.
+    ]);
+    const res = await store.applyTriageResults(results);
+    expect(res).toMatchObject({ updated: 1, frivolous: 1 });
+
+    const after = await store.listCandidates();
+    expect(after.length).toBe(2); // no promote/reject/delete
+    const flagged = after.find((c) => c.frontmatter.source_id === 'gh-b')!;
+    expect(flagged.frontmatter.triage_signal).toBe('frivolous');
+    expect(flagged.frontmatter.triage_source).toBe('llm');
+    expect(flagged.frontmatter.triage_model).toBe('ollama:llama3.2');
+    const untouched = after.find((c) => c.frontmatter.source_id === 'gh-a')!;
+    expect(untouched.frontmatter.triage_signal).toBe('keep');
+    expect(untouched.frontmatter.triage_source).toBe('prefilter');
   });
 });
 

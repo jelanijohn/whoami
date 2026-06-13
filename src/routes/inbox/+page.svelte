@@ -14,6 +14,36 @@
   const kept = $derived(app.candidates.filter((c) => !isFrivolous(c)));
   const frivolous = $derived(app.candidates.filter(isFrivolous));
 
+  // --- Multi-select (bulk promote/reject) ---------------------------------
+  // Selection is keyed by candidate path — the same stable key the lists use.
+  // Reassign the Set on every change so the runes graph re-runs.
+  let selectedPaths = $state(new Set<string>());
+  // A single project applied to every promoted item. The sentinel keeps each
+  // card's own suggested affiliation; an explicit slug (or none) overrides all.
+  const KEEP = '__keep__';
+  let bulkProject = $state(KEEP);
+
+  const selectedCount = $derived(selectedPaths.size);
+  const isSelected = (c: Entry) => !!c.path && selectedPaths.has(c.path);
+  const allKeptSelected = $derived(kept.length > 0 && kept.every(isSelected));
+  const someKeptSelected = $derived(kept.some(isSelected) && !allKeptSelected);
+
+  function toggleSelect(path: string, checked: boolean) {
+    const next = new Set(selectedPaths);
+    if (checked) next.add(path);
+    else next.delete(path);
+    selectedPaths = next;
+  }
+  function clearSelection() {
+    selectedPaths = new Set();
+  }
+  function toggleSelectAllKept() {
+    const next = new Set(selectedPaths);
+    if (allKeptSelected) for (const c of kept) next.delete(c.path!);
+    else for (const c of kept) next.add(c.path!);
+    selectedPaths = next;
+  }
+
   function promote(path: string, project: string) {
     void app.promoteCandidate(path, project);
   }
@@ -22,12 +52,34 @@
       void app.rejectCandidate(path, title);
     }
   }
+
+  async function promoteSelected() {
+    const items = app.candidates.filter(isSelected).map((c) => ({
+      path: c.path!,
+      project:
+        bulkProject === KEEP
+          ? typeof c.frontmatter.project === 'string'
+            ? c.frontmatter.project
+            : ''
+          : bulkProject
+    }));
+    if (items.length === 0) return;
+    clearSelection();
+    await app.promoteCandidates(items);
+  }
+  async function rejectSelected() {
+    const paths = app.candidates.filter(isSelected).map((c) => c.path!);
+    if (paths.length === 0) return;
+    if (!confirm(`Reject ${paths.length} item(s)? They won't be proposed again.`)) return;
+    clearSelection();
+    await app.rejectCandidates(paths);
+  }
   async function rejectAllFrivolous() {
     if (!confirm(`Reject all ${frivolous.length} item(s) flagged as frivolous? They won't be proposed again.`)) {
       return;
     }
-    // A human click, never automatic — reuses the existing per-item reject gate.
-    for (const c of frivolous) await app.rejectCandidate(c.path!, String(c.frontmatter.title));
+    // A human click, never automatic — one confirmation, one batched pass.
+    await app.rejectCandidates(frivolous.map((c) => c.path!));
   }
 </script>
 
@@ -46,10 +98,84 @@
       The inbox is empty. Run a data-source import to stage candidates here.
     </p>
   {:else}
-    <p class="text-xs text-[var(--color-muted)]">
-      {app.candidates.length} candidate{app.candidates.length === 1 ? '' : 's'} awaiting review{#if frivolous.length}
-        · {kept.length} kept, {frivolous.length} flagged frivolous{/if}
-    </p>
+    {#if selectedCount > 0}
+      <div
+        class="sticky top-0 z-10 flex flex-wrap items-center gap-2 rounded-lg border border-[var(--color-accent)] bg-[var(--color-accent)]/10 px-3 py-2 backdrop-blur"
+      >
+        <span class="text-sm font-medium">{selectedCount} selected</span>
+        <button
+          class="rounded px-2 py-0.5 text-xs text-[var(--color-muted)] hover:bg-black/5 dark:hover:bg-white/10"
+          onclick={clearSelection}
+        >
+          Clear
+        </button>
+        <div class="ml-auto flex flex-wrap items-center gap-2">
+          <label class="text-xs text-[var(--color-muted)]" for="bulk-project">Project</label>
+          <select
+            id="bulk-project"
+            bind:value={bulkProject}
+            class="rounded border border-[var(--color-line)] px-2 py-1 text-sm"
+          >
+            <option value={KEEP}>— keep each suggestion —</option>
+            <option value="">— none —</option>
+            {#each app.projects as p (p.slug)}
+              <option value={p.slug}>{p.entry.frontmatter.title}</option>
+            {/each}
+          </select>
+          <button
+            class="rounded px-2.5 py-1 text-xs text-[var(--color-private)] hover:bg-[var(--color-private)]/10 disabled:opacity-50"
+            disabled={app.busy}
+            onclick={() => void rejectSelected()}
+          >
+            Reject {selectedCount}
+          </button>
+          <button
+            class="rounded bg-[var(--color-accent)] px-3 py-1 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
+            disabled={app.busy}
+            onclick={() => void promoteSelected()}
+          >
+            Promote {selectedCount}
+          </button>
+        </div>
+      </div>
+    {/if}
+
+    <div class="flex flex-wrap items-center gap-3">
+      {#if kept.length}
+        <label class="flex items-center gap-1.5 text-xs text-[var(--color-muted)]">
+          <input
+            type="checkbox"
+            class="h-4 w-4 accent-[var(--color-accent)]"
+            checked={allKeptSelected}
+            indeterminate={someKeptSelected}
+            onchange={toggleSelectAllKept}
+          />
+          Select all
+        </label>
+      {/if}
+      <p class="text-xs text-[var(--color-muted)]">
+        {app.candidates.length} candidate{app.candidates.length === 1 ? '' : 's'} awaiting review{#if frivolous.length}
+          · {kept.length} kept, {frivolous.length} flagged frivolous{/if}
+      </p>
+      <button
+        class="ml-auto rounded px-2.5 py-1 text-xs text-[var(--color-muted)] hover:bg-black/5 disabled:opacity-50 dark:hover:bg-white/10"
+        title="Re-run the triage prefilter over the inbox with the current rules"
+        disabled={app.busy}
+        onclick={() => void app.retriageInbox()}
+      >
+        Re-triage
+      </button>
+      <button
+        class="rounded px-2.5 py-1 text-xs text-[var(--color-muted)] hover:bg-black/5 disabled:opacity-50 dark:hover:bg-white/10"
+        title={app.llmReady
+          ? 'Send the kept items through the LLM to flag frivolous ones the rules miss'
+          : 'Configure an AI provider (Data → AI provider) to enable LLM triage'}
+        disabled={app.busy || !app.llmReady}
+        onclick={() => void app.llmTriageInbox()}
+      >
+        LLM triage
+      </button>
+    </div>
 
     <div class="space-y-3">
       {#each kept as candidate (candidate.path)}
@@ -57,6 +183,8 @@
           {candidate}
           projects={app.projects}
           busy={app.busy}
+          selected={isSelected(candidate)}
+          onselect={toggleSelect}
           onpromote={promote}
           onreject={reject}
         />
@@ -84,6 +212,8 @@
               {candidate}
               projects={app.projects}
               busy={app.busy}
+              selected={isSelected(candidate)}
+              onselect={toggleSelect}
               onpromote={promote}
               onreject={reject}
             />

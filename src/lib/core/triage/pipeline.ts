@@ -37,9 +37,9 @@ export interface TriageOpts {
 const TRIAGE_TOKEN_BUDGET = 8_000;
 const DEFAULT_MAX_ITEMS_PER_CALL = 40;
 
-/** Group the unsure items into chunks bounded by both a count and a rough token
- * estimate (spec §5 chunking). Uses the exact serialized view the prompt embeds. */
-function chunkUnsure(items: RawItem[], maxItems: number): RawItem[][] {
+/** Group items into chunks bounded by both a count and a rough token estimate
+ * (spec §5 chunking). Uses the exact serialized view the prompt embeds. */
+function chunkItems(items: RawItem[], maxItems: number): RawItem[][] {
   const chunks: RawItem[][] = [];
   let current: RawItem[] = [];
   let tokens = 0;
@@ -55,6 +55,53 @@ function chunkUnsure(items: RawItem[], maxItems: number): RawItem[][] {
   }
   if (current.length > 0) chunks.push(current);
   return chunks;
+}
+
+/**
+ * The LLM pass (spec §5): send EVERY given item to the model — no prefilter
+ * gating — chunked, folding each verdict into a `provenanceKey → TriageResult`
+ * entry. FAIL-OPEN: a failed chunk or an unscored id stays `keep`; only an
+ * explicit model `keep:false` flips an item to `frivolous`.
+ */
+async function runLlmPass(
+  items: RawItem[],
+  llm: Llm,
+  rubric: TriageRubric,
+  model: string | undefined,
+  maxItems: number,
+  at: string
+): Promise<Map<string, TriageResult>> {
+  const results = new Map<string, TriageResult>();
+  for (const chunk of chunkItems(items, maxItems)) {
+    const validIds = new Set(chunk.map((i) => provenanceKey(String(i.source), i.sourceId)));
+    let verdicts: ReturnType<typeof parseVerdicts> = new Map();
+    try {
+      const raw = await llm.complete(buildTriagePrompt(chunk, rubric));
+      verdicts = parseVerdicts(raw, validIds);
+    } catch {
+      // A failed chunk (transport or parse) fails its items open to keep.
+      verdicts = new Map();
+    }
+    for (const item of chunk) {
+      const key = provenanceKey(String(item.source), item.sourceId);
+      const v = verdicts.get(key);
+      if (!v) {
+        // Unscored id → fail-open keep (never flip to frivolous).
+        results.set(key, { signal: 'keep', reason: 'unscored', source: 'llm', model, at });
+      } else if (v.keep) {
+        results.set(key, { signal: 'keep', reason: v.reason || 'kept by model', source: 'llm', model, at });
+      } else {
+        results.set(key, {
+          signal: 'frivolous',
+          reason: v.reason || 'flagged by model',
+          source: 'llm',
+          model,
+          at
+        });
+      }
+    }
+  }
+  return results;
 }
 
 /**
@@ -93,36 +140,36 @@ export async function triageItems(
   }
 
   // Pass 2 — optional LLM over the unsure remainder only.
-  const model = opts.model;
-  const chunks = chunkUnsure(unsure, opts.maxItemsPerCall ?? DEFAULT_MAX_ITEMS_PER_CALL);
-  for (const chunk of chunks) {
-    const validIds = new Set(chunk.map((i) => provenanceKey(String(i.source), i.sourceId)));
-    let verdicts: ReturnType<typeof parseVerdicts> = new Map();
-    try {
-      const raw = await opts.llm.complete(buildTriagePrompt(chunk, rubric));
-      verdicts = parseVerdicts(raw, validIds);
-    } catch {
-      // A failed chunk (transport or parse) fails its items open to keep.
-      verdicts = new Map();
-    }
-    for (const item of chunk) {
-      const key = provenanceKey(String(item.source), item.sourceId);
-      const v = verdicts.get(key);
-      if (!v) {
-        // Unscored id → fail-open keep (never flip to frivolous).
-        results.set(key, { signal: 'keep', reason: 'unscored', source: 'llm', model, at });
-      } else if (v.keep) {
-        results.set(key, { signal: 'keep', reason: v.reason || 'kept by model', source: 'llm', model, at });
-      } else {
-        results.set(key, {
-          signal: 'frivolous',
-          reason: v.reason || 'flagged by model',
-          source: 'llm',
-          model,
-          at
-        });
-      }
-    }
-  }
+  const llmResults = await runLlmPass(
+    unsure,
+    opts.llm,
+    rubric,
+    opts.model,
+    opts.maxItemsPerCall ?? DEFAULT_MAX_ITEMS_PER_CALL,
+    at
+  );
+  for (const [key, result] of llmResults) results.set(key, result);
   return results;
+}
+
+/**
+ * Run a set of already-staged items straight through the LLM triage pass,
+ * skipping the prefilter — to catch frivolous cases the deterministic rules
+ * miss (the inbox "LLM triage" action). Returns a `provenanceKey → TriageResult`
+ * map; only items the model explicitly flags flip to `frivolous`, everything
+ * else fails open to `keep`. A null/absent `llm` or empty input ⇒ empty map.
+ */
+export async function llmTriageItems(
+  items: RawItem[],
+  opts: TriageOpts = {}
+): Promise<Map<string, TriageResult>> {
+  if (!opts.llm || items.length === 0) return new Map();
+  return runLlmPass(
+    items,
+    opts.llm,
+    opts.rubric ?? DEFAULT_RUBRIC,
+    opts.model,
+    opts.maxItemsPerCall ?? DEFAULT_MAX_ITEMS_PER_CALL,
+    nowIso()
+  );
 }

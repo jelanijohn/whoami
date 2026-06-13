@@ -18,6 +18,7 @@ import {
   exists,
   mkdir,
   readDir,
+  readFile,
   readTextFile,
   remove,
   writeTextFile
@@ -25,6 +26,7 @@ import {
 import { invoke } from '@tauri-apps/api/core';
 import type {
   Database as CoreDatabase,
+  DocExtract,
   FileSystem,
   GitRunner,
   Http,
@@ -147,6 +149,54 @@ class TauriDatabase implements CoreDatabase {
   }
 }
 
+/**
+ * DocExtract seam (résumé import spec §3) for the webview: pdf.js (Mozilla) for
+ * PDF, mammoth's self-contained browser bundle for DOCX. The heavy parsers are
+ * dynamically imported so they only load when a résumé is actually imported and
+ * never bloat the initial bundle; the core stays free of any binary parser.
+ */
+const tauriDocs: DocExtract = {
+  async extractText(path) {
+    const ext = path.toLowerCase().split('.').pop();
+    const bytes = await readFile(path); // Uint8Array of the raw file
+    if (ext === 'pdf') {
+      const pdfjs = await import('pdfjs-dist');
+      // The worker ships as a bundled asset; ?url gives Vite-emitted URL.
+      const workerUrl = (await import('pdfjs-dist/build/pdf.worker.min.mjs?url')).default;
+      pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
+      const loadingTask = pdfjs.getDocument({ data: bytes });
+      const doc = await loadingTask.promise;
+      const pageCount = doc.numPages;
+      let text = '';
+      for (let i = 1; i <= pageCount; i++) {
+        const page = await doc.getPage(i);
+        // Consume the text stream with getReader() rather than page.getTextContent():
+        // pdf.js 6's getTextContent() iterates the stream via `for await…of`, and
+        // WebKitGTK (the Tauri webview) doesn't implement ReadableStream's async
+        // iterator, so that path throws. getReader() is supported everywhere.
+        const reader = (
+          page.streamTextContent() as ReadableStream<{ items: Array<{ str?: string }> }>
+        ).getReader();
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          text += value.items.map((it) => it.str ?? '').join(' ');
+        }
+        text += '\n';
+      }
+      await loadingTask.destroy();
+      return { text, kind: 'pdf', pageCount };
+    }
+    if (ext === 'docx') {
+      const mammoth = await import('mammoth/mammoth.browser.js');
+      const arrayBuffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+      const { value } = await mammoth.extractRawText({ arrayBuffer });
+      return { text: value, kind: 'docx' };
+    }
+    throw new Error(`Unsupported résumé format (expected .pdf or .docx): ${path}`);
+  }
+};
+
 /** sha256 (hex) of a UTF-8 string via WebCrypto. */
 async function sha256(content: string): Promise<string> {
   const bytes = new TextEncoder().encode(content);
@@ -182,5 +232,14 @@ function shortHash(input: string): string {
 export async function createTauriPlatform(recordRoot: string): Promise<Platform> {
   const dbName = `whoami-index-${shortHash(recordRoot)}.db`;
   const db = await TauriDatabase.open(dbName);
-  return { fs, db, git, hash: sha256, joinPath, http: tauriHttp, secrets: keyringSecrets };
+  return {
+    fs,
+    db,
+    git,
+    hash: sha256,
+    joinPath,
+    http: tauriHttp,
+    secrets: keyringSecrets,
+    docs: tauriDocs
+  };
 }

@@ -10,7 +10,7 @@ import { selectNewItems, stageItems } from '../ingest/pipeline';
 import { prefilterItem } from './prefilter';
 import { buildTriagePrompt } from './prompts';
 import { parseVerdicts } from './parse';
-import { triageItems } from './pipeline';
+import { triageItems, llmTriageItems } from './pipeline';
 import { DEFAULT_RUBRIC, TRIAGE_KEYS } from './types';
 
 // --- fixtures ---------------------------------------------------------------
@@ -89,6 +89,37 @@ describe('prefilterItem — GitHub (spec §4)', () => {
 
   it('a trivial title wins even over a merged state', () => {
     expect(prefilterItem(github('3', 'bump deps', 'merged'), R).verdict).toBe('frivolous');
+  });
+
+  it('flags branch-promotion merge titles frivolous', () => {
+    expect(
+      prefilterItem(github('6', 'dev > prod merge - brief explanation', 'merged'), R).verdict
+    ).toBe('frivolous');
+    expect(prefilterItem(github('7', 'staging>prod merge'), R).verdict).toBe('frivolous');
+  });
+
+  it('flags branch promotions in any shape: reverse direction, no "merge" word, "from"', () => {
+    // Reverse direction (`<`), with and without a trailing parenthetical.
+    expect(prefilterItem(github('8', 'prod < dev merge (load time speed up)'), R).verdict).toBe(
+      'frivolous'
+    );
+    expect(prefilterItem(github('9', 'launch < dev merge'), R).verdict).toBe('frivolous');
+    // "merge" prefix rather than suffix.
+    expect(prefilterItem(github('10', 'Merge main > staging'), R).verdict).toBe('frivolous');
+    // Promotion with no "merge" word at all.
+    expect(prefilterItem(github('11', 'dev > prod - landing page and admin refresh'), R).verdict).toBe(
+      'frivolous'
+    );
+    // "from" phrasing, and a "do not merge" marker.
+    expect(prefilterItem(github('12', 'Update prod from dev'), R).verdict).toBe('frivolous');
+    expect(prefilterItem(github('13', '[do not merge] i18n test'), R).verdict).toBe('frivolous');
+  });
+
+  it('leaves a real title that merely contains a redirection-like phrase alone', () => {
+    // Only the second side is an env word, so this is NOT a promotion.
+    expect(prefilterItem(github('14', 'Refactor main > index module split', 'merged'), R).verdict).toBe(
+      'keep'
+    );
   });
 
   it('keeps merged, non-trivial work', () => {
@@ -293,5 +324,44 @@ describe('triageItems — optional LLM pass (spec §5)', () => {
     expect(calls).toBe(3); // 40 + 40 + 15
     expect(out.size).toBe(95);
     expect([...out.values()].every((r) => r.signal === 'keep')).toBe(true);
+  });
+});
+
+// --- inbox "LLM triage" action: every item goes to the model -----------------
+
+describe('llmTriageItems — no prefilter gating (inbox LLM triage)', () => {
+  it('flags items the prefilter would have kept, and keeps the rest', async () => {
+    // A merged PR the prefilter calls `keep` is still sent to the model here.
+    const items = [github('m1', 'Add provider dispatch', 'merged'), github('m2', 'Spike on caching')];
+    const llm = fakeLlm({ [keyOf(items[0])]: false, [keyOf(items[1])]: true });
+    const out = await llmTriageItems(items, { llm, model: 'ollama:llama3.2' });
+    expect(out.get(keyOf(items[0]))).toMatchObject({
+      signal: 'frivolous',
+      source: 'llm',
+      model: 'ollama:llama3.2'
+    });
+    expect(out.get(keyOf(items[1]))).toMatchObject({ signal: 'keep', source: 'llm' });
+  });
+
+  it('a failed chunk and an unscored id both fail open to keep', async () => {
+    const boom: Llm = {
+      async complete() {
+        throw new Error('transport boom');
+      }
+    };
+    const items = [github('m1', 'Add dispatch', 'merged')];
+    expect((await llmTriageItems(items, { llm: boom })).get(keyOf(items[0]))).toMatchObject({
+      signal: 'keep'
+    });
+    // Model omits m2 → unscored → keep.
+    const partial = fakeLlm({ [keyOf(items[0])]: false });
+    const two = [items[0], github('m2', 'Spike')];
+    const out = await llmTriageItems(two, { llm: partial });
+    expect(out.get(keyOf(two[1]))).toMatchObject({ signal: 'keep', reason: 'unscored' });
+  });
+
+  it('no provider or empty input ⇒ empty map (never touches the network)', async () => {
+    expect((await llmTriageItems([], { llm: fakeLlm({}) })).size).toBe(0);
+    expect((await llmTriageItems([github('x', 'y', 'merged')], { llm: null })).size).toBe(0);
   });
 });
