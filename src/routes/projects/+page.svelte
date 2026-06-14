@@ -1,6 +1,6 @@
 <script lang="ts">
   import { app } from '$lib/state.svelte';
-  import type { ProjectRollup, ReduceProposal } from '$lib/core';
+  import { extractMarkedBlock, type ProjectRollup, type ReduceProposal } from '$lib/core';
 
   let selected = $state('');
   let rollup = $state<ProjectRollup | null>(null);
@@ -35,6 +35,11 @@
 
   const current = $derived(app.projects.find((p) => p.slug === selected) ?? null);
 
+  // The retrospective already saved into this project's entry (between the
+  // reduce markers), if any. Recomputes after accept since refresh() reloads
+  // app.projects.
+  const saved = $derived(current ? extractMarkedBlock(current.entry.body) : '');
+
   async function generate() {
     generating = true;
     try {
@@ -65,7 +70,7 @@
       </select>
     {/if}
     <span class="ml-auto text-xs text-[var(--color-muted)]">
-      {app.llmReady ? 'LLM ready — retrospective coming in Phase IV' : 'No LLM configured — rollup only'}
+      {app.llmReady ? 'LLM ready — generate a retrospective below' : 'No LLM configured — rollup only'}
     </span>
   </div>
 
@@ -190,6 +195,20 @@
             </button>
           </div>
         </div>
+      {:else if saved}
+        <div class="space-y-2">
+          <p class="text-xs text-[var(--color-muted)]">
+            Saved retrospective, stored in the project entry. Regenerate to refresh it from the latest
+            entries.
+          </p>
+          <pre class="max-h-96 overflow-auto rounded border border-[var(--color-line)] bg-gray-50 p-3 text-xs whitespace-pre-wrap dark:bg-white/5">{saved}</pre>
+        </div>
+      {:else if app.llmReady}
+        <p class="text-sm text-[var(--color-muted)]">
+          No retrospective yet. Click <span class="font-medium">Generate retrospective</span> to draft one
+          from this project's {rollup.total}
+          {rollup.total === 1 ? 'entry' : 'entries'}.
+        </p>
       {/if}
     </section>
   {/if}
