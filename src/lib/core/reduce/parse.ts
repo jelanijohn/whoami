@@ -17,6 +17,48 @@ export function stripFence(raw: string): string {
   return fenced ? fenced[1].trim() : t;
 }
 
+/**
+ * Return the first top-level balanced `{…}` object in `text`, or null if there
+ * is none. Lets us recover the JSON when the model wraps it in a prose preamble
+ * ("Here is the retrospective:") despite the schema note — without falling for a
+ * brace inside a string literal. Truncated replies have no balanced close, so
+ * they correctly return null and fail visibly.
+ */
+function firstJsonObject(text: string): string | null {
+  const start = text.indexOf('{');
+  if (start === -1) return null;
+  let depth = 0;
+  let inStr = false;
+  let escaped = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (inStr) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') inStr = true;
+    else if (ch === '{') depth++;
+    else if (ch === '}' && --depth === 0) return text.slice(start, i + 1);
+  }
+  return null;
+}
+
+/** Build a diagnosable parse error: flag a likely truncation (no balanced
+ * close — the §3.4 large-project failure) and quote the reply's tail so the
+ * cause is visible instead of an opaque "not valid JSON". */
+function malformedReply(raw: string): Error {
+  const t = raw.trim();
+  const looksTruncated = t.length > 0 && firstJsonObject(t) === null && t.includes('{');
+  const tail = t.slice(-200).replace(/\s+/g, ' ');
+  return new Error(
+    'reduce: model reply was not valid JSON' +
+      (looksTruncated ? ' (reply looks truncated — raise maxTokens)' : '') +
+      ` [${t.length} chars; ends: …${tail}]`
+  );
+}
+
 function asFact(v: unknown): Fact | null {
   if (!v || typeof v !== 'object') return null;
   const o = v as Record<string, unknown>;
@@ -34,11 +76,19 @@ function asFact(v: unknown): Fact | null {
  * valid JSON of the closed shape — a malformed run fails visibly (plan §4.3).
  */
 export function parseRetrospective(raw: string): Retrospective {
+  const text = stripFence(raw);
   let data: unknown;
   try {
-    data = JSON.parse(stripFence(raw));
+    data = JSON.parse(text);
   } catch {
-    throw new Error('reduce: model reply was not valid JSON');
+    // Tolerate a prose preamble/trailer around the object before giving up.
+    const slice = firstJsonObject(text);
+    if (slice === null) throw malformedReply(raw);
+    try {
+      data = JSON.parse(slice);
+    } catch {
+      throw malformedReply(raw);
+    }
   }
   if (!data || typeof data !== 'object') {
     throw new Error('reduce: model reply was not a JSON object');

@@ -41,11 +41,14 @@ const BASE = 'https://app.asana.com/api/1.0';
 
 /** `opt_fields` requested per task (spec §6) — exactly what the mapper and the
  * membership predicate read. `followers.gid` is the new must-have; `assignee`
- * lets us both detect "me" and record who it sits with now. No `created_by` —
- * that is not a task field; the creator already appears in `followers`. */
+ * lets us both detect "me" and record who it sits with now; `notes` is the
+ * task's authored description, captured as a bounded verbatim snippet (see
+ * {@link notesSnippet}). No `created_by` — that is not a task field; the creator
+ * already appears in `followers`. Both fetch paths thread this same string into
+ * their single request, so adding `notes` stays zero extra round-trips. */
 const TASK_FIELDS =
   'name,permalink_url,completed,completed_at,created_at,modified_at,' +
-  'due_on,assignee.gid,assignee.name,followers.gid,memberships.project.name';
+  'due_on,assignee.gid,assignee.name,followers.gid,memberships.project.name,notes';
 
 export interface AsanaFetchOpts {
   token: string;
@@ -82,6 +85,25 @@ export class AsanaPaymentRequiredError extends Error {
   }
 }
 
+/** Description-snippet cap, characters. Asana `notes` is unbounded free text;
+ * we keep a bounded, verbatim snippet — enough for the reduce stage to draft
+ * from, short enough to limit page weight and the chance of pulling whole
+ * confidential specs across. Tunable; see spec §3/§7. */
+const NOTES_SNIPPET_CAP = 500;
+
+/** Trim `notes`; if it exceeds the cap, cut at the last whitespace within the
+ * cap (never mid-word) and append a marker parallel to the discussion-truncation
+ * marker. Pure — fixture-tested. The kept head is always a verbatim prefix of
+ * the trimmed notes and never exceeds the cap. */
+function notesSnippet(notes: string, cap = NOTES_SNIPPET_CAP): string {
+  const trimmed = notes.trim();
+  if (trimmed.length <= cap) return trimmed;
+  const hard = trimmed.slice(0, cap);
+  const m = hard.match(/^[\s\S]*\s/); // greedy through the last whitespace
+  const head = (m ? m[0] : hard).trimEnd();
+  return `${head}\n\n… [description truncated at ${cap} chars]`;
+}
+
 /** Map one Asana task into a RawItem. Pure — fixture-tested. Role-agnostic: the
  * `asana_role` involvement fact is merged by the fetch loop where `meGid` is in
  * scope (see {@link withRole}), keeping this mapper testable without a "me". */
@@ -108,6 +130,15 @@ export function mapAsanaTask(v: unknown): RawItem {
     completedAt ? `Completed: ${completedAt}.` : ''
   ].filter(Boolean);
 
+  // Verbatim description snippet, in the same `--- Description ---` block as the
+  // GitHub adapter (spec §3). Kept inside the delimiter so our computed facts
+  // stay separated from provider content (which is data, never instructions).
+  const notes = asStr(get(v, 'notes'));
+  const snippet = notes ? notesSnippet(notes) : '';
+  const body = snippet
+    ? `${bodyLines.join('\n')}\n\n--- Description ---\n${snippet}`
+    : bodyLines.join('\n');
+
   return {
     source: 'asana',
     sourceId: asStr(get(v, 'gid')) ?? '',
@@ -115,7 +146,7 @@ export function mapAsanaTask(v: unknown): RawItem {
     // Event date: completion when it happened, else last touch, else creation.
     date: completedAt ?? modifiedAt ?? createdAt ?? '',
     url: asStr(get(v, 'permalink_url')),
-    body: bodyLines.join('\n'),
+    body,
     suggestedType: 'journal',
     suggestedTags: ['asana'],
     suggestedProject: project ? slugify(project) : undefined,

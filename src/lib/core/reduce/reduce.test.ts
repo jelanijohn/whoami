@@ -80,6 +80,20 @@ describe('strict parse + evidence filter (plan §4.3)', () => {
     expect(() => parseRetrospective('sorry, I cannot do that')).toThrow();
   });
 
+  it('recovers JSON wrapped in a prose preamble/trailer', () => {
+    const raw =
+      'Here is the retrospective:\n' +
+      '{"worked_on":[{"text":"did x","evidence":["A"]}],"successes":[],"failures":[],"lessons":[]}\n' +
+      'Let me know if you need changes.';
+    const retro = parseRetrospective(raw);
+    expect(retro.worked_on).toMatchObject([{ text: 'did x', evidence: ['A'] }]);
+  });
+
+  it('flags a truncated reply (the large-project failure) in the error', () => {
+    const truncated = '{"worked_on":[{"text":"did x","evidence":["A0000000000000000000000000';
+    expect(() => parseRetrospective(truncated)).toThrow(/looks truncated/);
+  });
+
   it('drops facts citing a ULID outside the input set, and facts with no evidence', () => {
     const retro = {
       ...emptyRetro(),

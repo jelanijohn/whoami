@@ -8,11 +8,24 @@
     if (app.store) app.loadCandidates();
   });
 
+  // A simple, local text filter over the staged candidates — title + body,
+  // case-insensitive. The inbox is fully loaded in memory, so this is a pure
+  // client-side narrow (no re-query, unlike the Journal's server-side search).
+  let filterText = $state('');
+  function matchesFilter(c: Entry): boolean {
+    const q = filterText.trim().toLowerCase();
+    if (!q) return true;
+    return (
+      c.frontmatter.title.toLowerCase().includes(q) || c.body.toLowerCase().includes(q)
+    );
+  }
+  const visible = $derived(app.candidates.filter(matchesFilter));
+
   // Triage (spec §6): a `frivolous` signal collapses an item into a disclosure;
   // it is never removed. Absence ⇒ untriaged ⇒ treated as keep.
   const isFrivolous = (c: Entry) => c.frontmatter.triage_signal === 'frivolous';
-  const kept = $derived(app.candidates.filter((c) => !isFrivolous(c)));
-  const frivolous = $derived(app.candidates.filter(isFrivolous));
+  const kept = $derived(visible.filter((c) => !isFrivolous(c)));
+  const frivolous = $derived(visible.filter(isFrivolous));
 
   // --- Multi-select (bulk promote/reject) ---------------------------------
   // Selection is keyed by candidate path — the same stable key the lists use.
@@ -22,6 +35,10 @@
   // card's own suggested affiliation; an explicit slug (or none) overrides all.
   const KEEP = '__keep__';
   let bulkProject = $state(KEEP);
+
+  // An optional free-text steer the owner can add to the LLM triage run — appended
+  // to the rubric as extra instructions for judging what counts as frivolous.
+  let llmInstructions = $state('');
 
   const selectedCount = $derived(selectedPaths.size);
   const isSelected = (c: Entry) => !!c.path && selectedPaths.has(c.path);
@@ -140,6 +157,13 @@
       </div>
     {/if}
 
+    <input
+      type="text"
+      bind:value={filterText}
+      placeholder="Filter the inbox…"
+      class="w-full rounded border border-[var(--color-line)] px-3 py-1.5 text-sm"
+    />
+
     <div class="flex flex-wrap items-center gap-3">
       {#if kept.length}
         <label class="flex items-center gap-1.5 text-xs text-[var(--color-muted)]">
@@ -154,8 +178,13 @@
         </label>
       {/if}
       <p class="text-xs text-[var(--color-muted)]">
-        {app.candidates.length} candidate{app.candidates.length === 1 ? '' : 's'} awaiting review{#if frivolous.length}
-          · {kept.length} kept, {frivolous.length} flagged frivolous{/if}
+        {#if filterText.trim()}
+          {visible.length} of {app.candidates.length} match{#if frivolous.length}
+            · {kept.length} kept, {frivolous.length} flagged frivolous{/if}
+        {:else}
+          {app.candidates.length} candidate{app.candidates.length === 1 ? '' : 's'} awaiting review{#if frivolous.length}
+            · {kept.length} kept, {frivolous.length} flagged frivolous{/if}
+        {/if}
       </p>
       <button
         class="ml-auto rounded px-2.5 py-1 text-xs text-[var(--color-muted)] hover:bg-black/5 disabled:opacity-50 dark:hover:bg-white/10"
@@ -165,17 +194,31 @@
       >
         Re-triage
       </button>
+      <input
+        type="text"
+        bind:value={llmInstructions}
+        placeholder="Extra LLM instructions (optional)…"
+        title="Free-text guidance the LLM also weighs when judging what's frivolous, e.g. “treat recruiter outreach as frivolous”"
+        disabled={app.busy || !app.llmReady}
+        class="w-56 rounded border border-[var(--color-line)] px-2 py-1 text-xs disabled:opacity-50"
+      />
       <button
         class="rounded px-2.5 py-1 text-xs text-[var(--color-muted)] hover:bg-black/5 disabled:opacity-50 dark:hover:bg-white/10"
         title={app.llmReady
           ? 'Send the kept items through the LLM to flag frivolous ones the rules miss'
           : 'Configure an AI provider (Data → AI provider) to enable LLM triage'}
         disabled={app.busy || !app.llmReady}
-        onclick={() => void app.llmTriageInbox()}
+        onclick={() => void app.llmTriageInbox(llmInstructions)}
       >
         LLM triage
       </button>
     </div>
+
+    {#if visible.length === 0}
+      <p class="py-12 text-center text-sm text-[var(--color-muted)]">
+        No candidates match “{filterText.trim()}”.
+      </p>
+    {/if}
 
     <div class="space-y-3">
       {#each kept as candidate (candidate.path)}

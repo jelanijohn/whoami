@@ -43,12 +43,21 @@ export function triageItemView(item: RawItem): {
   };
 }
 
-/** Build the batch-classifier request for one chunk of prefilter-`unsure` items. */
-export function buildTriagePrompt(items: RawItem[], rubric: TriageRubric): LlmCompletionRequest {
+/** Build the batch-classifier request for one chunk of prefilter-`unsure` items.
+ * `extraInstructions`, when present, is an extra natural-language steer the owner
+ * typed for this run — appended to the rubric as additional SYSTEM guidance, kept
+ * above {@link DATA_GUARD} so it counts as instructions, not item data. */
+export function buildTriagePrompt(
+  items: RawItem[],
+  rubric: TriageRubric,
+  extraInstructions?: string
+): LlmCompletionRequest {
+  const extra = extraInstructions?.trim();
   const system =
     'You triage candidate items for a personal professional history, labelling each ' +
     'as worth keeping or frivolous noise.\n' +
     rubric.frivolousCriteria +
+    (extra ? `\n\nAdditional instructions from the record's owner:\n${extra}` : '') +
     '\n' +
     DATA_GUARD +
     '\n' +

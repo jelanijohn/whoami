@@ -393,7 +393,7 @@ class AppState {
    * frivolous cases the deterministic prefilter misses. Annotation only — items
    * stay in the inbox; some `keep` flip to `frivolous` (triage spec §0). No-op
    * with a clear message when no provider is configured. */
-  async llmTriageInbox(): Promise<void> {
+  async llmTriageInbox(extraInstructions?: string): Promise<void> {
     if (!this.store) return;
     if (!this.llmReady || !this.llm) {
       this.message = 'Configure an AI provider first (Data → AI provider)';
@@ -409,7 +409,7 @@ class AppState {
       const model = this.llmConfig ? `${this.llmConfig.provider}:${this.llmConfig.model}` : undefined;
       const results = await llmTriageItems(
         targets.map((t) => t.item),
-        { llm: this.llm!, model, rubric: this.triageRubric() }
+        { llm: this.llm!, model, rubric: this.triageRubric(), extraInstructions }
       );
       // Only persist the model's frivolous findings — re-affirming `keep` would
       // rewrite every kept candidate to no effect. Items stay in the inbox.

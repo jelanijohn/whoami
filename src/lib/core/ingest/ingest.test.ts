@@ -443,6 +443,41 @@ describe('asana mapper', () => {
     expect(item.meta?.status).toBe('open');
     expect(item.suggestedProject).toBeUndefined();
   });
+
+  it('maps the description block when notes are present (verbatim, trimmed)', () => {
+    const item = mapAsanaTask({
+      gid: '1',
+      name: 'has notes',
+      notes: '  Built the importer. Handles retries.  '
+    });
+    expect(item.body).toContain('--- Description ---\nBuilt the importer. Handles retries.');
+    // Trimmed: leading/trailing whitespace stripped, body ends at the notes.
+    expect(item.body!.endsWith('Built the importer. Handles retries.')).toBe(true);
+  });
+
+  it('omits the description block when notes are absent or blank', () => {
+    expect(mapAsanaTask({ gid: '1', name: 'no notes' }).body).not.toContain('--- Description ---');
+    expect(mapAsanaTask({ gid: '1', name: 'blank notes', notes: '   ' }).body).not.toContain(
+      '--- Description ---'
+    );
+  });
+
+  it('preserves internal newlines under the cap', () => {
+    const item = mapAsanaTask({ gid: '1', name: 'multiline', notes: 'Line one.\n\nLine two.' });
+    expect(item.body).toContain('--- Description ---\nLine one.\n\nLine two.');
+  });
+
+  it('truncates over-cap notes at a word boundary with the exact marker', () => {
+    const cap = 500;
+    const item = mapAsanaTask({ gid: '1', name: 'long', notes: 'word '.repeat(200) });
+    expect(item.body).toContain(`… [description truncated at ${cap} chars]`);
+    const start = item.body!.indexOf('--- Description ---\n') + '--- Description ---\n'.length;
+    const head = item.body!.slice(start, item.body!.indexOf('\n\n… [description truncated at'));
+    expect(head.length).toBeLessThanOrEqual(cap);
+    expect('word '.repeat(200).trim().startsWith(head)).toBe(true);
+    // Never cut mid-word: the kept head ends on a complete token.
+    expect(head.endsWith('word')).toBe(true);
+  });
 });
 
 // --- Asana involvement predicate (the reassignment-survival signal, §8) -----

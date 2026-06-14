@@ -31,6 +31,9 @@ export interface TriageOpts {
   model?: string;
   /** Soft cap on items per LLM call (default 40, spec §5). */
   maxItemsPerCall?: number;
+  /** Extra natural-language steer the owner typed for this run, appended to the
+   * rubric as additional SYSTEM guidance (see {@link buildTriagePrompt}). */
+  extraInstructions?: string;
 }
 
 /** ~8k tokens of item data per LLM call (mirrors reduce's budget). */
@@ -69,14 +72,15 @@ async function runLlmPass(
   rubric: TriageRubric,
   model: string | undefined,
   maxItems: number,
-  at: string
+  at: string,
+  extraInstructions?: string
 ): Promise<Map<string, TriageResult>> {
   const results = new Map<string, TriageResult>();
   for (const chunk of chunkItems(items, maxItems)) {
     const validIds = new Set(chunk.map((i) => provenanceKey(String(i.source), i.sourceId)));
     let verdicts: ReturnType<typeof parseVerdicts> = new Map();
     try {
-      const raw = await llm.complete(buildTriagePrompt(chunk, rubric));
+      const raw = await llm.complete(buildTriagePrompt(chunk, rubric, extraInstructions));
       verdicts = parseVerdicts(raw, validIds);
     } catch {
       // A failed chunk (transport or parse) fails its items open to keep.
@@ -146,7 +150,8 @@ export async function triageItems(
     rubric,
     opts.model,
     opts.maxItemsPerCall ?? DEFAULT_MAX_ITEMS_PER_CALL,
-    at
+    at,
+    opts.extraInstructions
   );
   for (const [key, result] of llmResults) results.set(key, result);
   return results;
@@ -170,6 +175,7 @@ export async function llmTriageItems(
     opts.rubric ?? DEFAULT_RUBRIC,
     opts.model,
     opts.maxItemsPerCall ?? DEFAULT_MAX_ITEMS_PER_CALL,
-    nowIso()
+    nowIso(),
+    opts.extraInstructions
   );
 }
