@@ -356,6 +356,27 @@ export class RecordStore {
     return { updated, keep, frivolous };
   }
 
+  /**
+   * Rewrite the `project` affiliation of every staged candidate currently
+   * pointing at `fromSlug` so it points at `toSlug` instead, writing each
+   * changed file in place. Used at the promote gate when a project is created
+   * on the fly: the rest of the inbox follows the (re)name in one pass so the
+   * owner isn't re-typing it per item. Candidates without `project: fromSlug`
+   * are left untouched; a no-op when the slugs match or `fromSlug` is empty.
+   * Returns the number of candidates rewritten.
+   */
+  async relabelCandidateProject(fromSlug: string, toSlug: string): Promise<number> {
+    if (!fromSlug || fromSlug === toSlug) return 0;
+    let updated = 0;
+    for (const c of await this.listCandidates()) {
+      if (c.frontmatter.project !== fromSlug) continue;
+      const frontmatter = { ...c.frontmatter, project: toSlug };
+      await this.writeEntryFile({ ...c, frontmatter });
+      updated++;
+    }
+    return updated;
+  }
+
   /** Write a candidate file into the inbox. Deterministic filename per
    * (source, source_id), so re-staging the same item is idempotent. The entry
    * is stored in full canonical entry format — promote is then just a move. */

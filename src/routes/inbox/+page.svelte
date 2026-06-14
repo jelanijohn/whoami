@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Entry } from '$lib/core';
+  import { slugify, type Entry } from '$lib/core';
   import { app } from '$lib/state.svelte';
   import CandidateCard from '$lib/components/CandidateCard.svelte';
 
@@ -61,9 +61,70 @@
     selectedPaths = next;
   }
 
-  function promote(path: string, project: string) {
-    void app.promoteCandidate(path, project);
+  // Promoting an item whose assigned project doesn't exist yet pauses to offer
+  // creating it (with an editable name) before the entry lands. Declining
+  // promotes as-is — the slug rides along as a pass-through, the prior
+  // behaviour. Creating it also relabels every other inbox item on the old slug
+  // so the rest of the inbox follows the (possibly edited) name in one pass.
+  let pendingPromote = $state<{ path: string; slug: string } | null>(null);
+  let newProjectName = $state('');
+
+  async function promote(path: string, project: string) {
+    const slug = project.trim();
+    if (slug && !(await app.projectExists(slug))) {
+      newProjectName = humanizeSlug(slug);
+      pendingPromote = { path, slug };
+      return;
+    }
+    await app.promoteCandidate(path, slug);
   }
+
+  /** A friendly default project name from a kebab/snake-case slug. */
+  function humanizeSlug(slug: string): string {
+    return slug
+      .replace(/[-_]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .replace(/\b\w/g, (c) => c.toUpperCase());
+  }
+
+  // The slug the typed name will actually produce, plus how many *other* staged
+  // items currently ride the old slug (they'll move to the new project too).
+  const previewSlug = $derived(slugify(newProjectName));
+  const affectedOthers = $derived(
+    pendingPromote
+      ? app.candidates.filter(
+          (c) => c.path !== pendingPromote!.path && c.frontmatter.project === pendingPromote!.slug
+        ).length
+      : 0
+  );
+
+  async function confirmCreateProject() {
+    if (!pendingPromote) return;
+    const { path, slug } = pendingPromote;
+    if (!newProjectName.trim()) return; // Create is disabled when empty, but guard anyway
+    pendingPromote = null;
+    const newSlug = await app.createProjectFromCandidate(newProjectName, slug);
+    await app.promoteCandidate(path, newSlug || slug);
+  }
+
+  async function skipCreateProject() {
+    if (!pendingPromote) return;
+    const { path, slug } = pendingPromote;
+    pendingPromote = null;
+    await app.promoteCandidate(path, slug); // continue as normal — slug stays a pass-through
+  }
+
+  function cancelPromote() {
+    pendingPromote = null; // abort entirely: nothing promoted, nothing created
+  }
+
+  /** Focus + select the name field when the dialog opens. */
+  function focusOnMount(node: HTMLInputElement) {
+    node.focus();
+    node.select();
+  }
+
   function reject(path: string, title: string) {
     if (confirm(`Reject “${title}”? It won't be proposed again.`)) {
       void app.rejectCandidate(path, title);
@@ -99,6 +160,12 @@
     await app.rejectCandidates(frivolous.map((c) => c.path!));
   }
 </script>
+
+<svelte:window
+  onkeydown={(e) => {
+    if (pendingPromote && e.key === 'Escape') cancelPromote();
+  }}
+/>
 
 <div class="space-y-4">
   <section>
@@ -266,3 +333,69 @@
     {/if}
   {/if}
 </div>
+
+{#if pendingPromote}
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+    <div
+      class="w-full max-w-md space-y-3 rounded-lg border border-[var(--color-line)] bg-white p-5 shadow-lg dark:bg-[#1e1f24]"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="new-project-title"
+    >
+      <h2 id="new-project-title" class="text-base font-semibold">New project?</h2>
+      <p class="text-sm text-[var(--color-muted)]">
+        This item is filed under
+        <code class="rounded bg-gray-100 px-1 py-0.5 text-xs dark:bg-white/10">{pendingPromote.slug}</code>, which
+        isn't a project yet. Create it now — you can rename it — or promote without creating one.
+      </p>
+
+      <label class="flex flex-col text-xs font-medium text-[var(--color-muted)]">
+        Project name
+        <input
+          bind:value={newProjectName}
+          use:focusOnMount
+          placeholder="Project name"
+          class="mt-1 rounded border border-[var(--color-line)] px-2 py-1.5 text-sm"
+          onkeydown={(e) => {
+            if (e.key === 'Enter') void confirmCreateProject();
+          }}
+        />
+      </label>
+
+      <p class="text-xs text-[var(--color-muted)]">
+        {#if previewSlug}
+          Slug: <code class="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/10">{previewSlug}</code>
+        {:else}
+          Enter a name to create the project.
+        {/if}
+        {#if affectedOthers}
+          · {affectedOthers} other inbox item{affectedOthers === 1 ? '' : 's'} on
+          <code class="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/10">{pendingPromote.slug}</code> will move to it.
+        {/if}
+      </p>
+
+      <div class="flex flex-wrap items-center justify-end gap-2 pt-1">
+        <button
+          class="mr-auto rounded px-2.5 py-1.5 text-sm text-[var(--color-muted)] hover:bg-gray-100 dark:hover:bg-white/10"
+          onclick={cancelPromote}
+        >
+          Cancel
+        </button>
+        <button
+          class="rounded border border-[var(--color-line)] px-3 py-1.5 text-sm hover:bg-gray-50 disabled:opacity-50 dark:hover:bg-white/5"
+          disabled={app.busy}
+          onclick={() => void skipCreateProject()}
+        >
+          Promote anyway
+        </button>
+        <button
+          class="rounded bg-[var(--color-accent)] px-3 py-1.5 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
+          disabled={app.busy || !newProjectName.trim()}
+          onclick={() => void confirmCreateProject()}
+        >
+          Create &amp; promote
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}

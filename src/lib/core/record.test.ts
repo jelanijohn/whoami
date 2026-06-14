@@ -238,6 +238,35 @@ describe('project dimension (plan §2)', () => {
     const promoted = await store.promoteCandidate(staged.path!, { project: '' });
     expect(promoted.frontmatter.project).toBeUndefined();
   });
+
+  it('relabelCandidateProject moves only matching staged candidates to a new slug', async () => {
+    const mk = (sourceId: string, title: string, project?: string) =>
+      makeEntry({
+        type: 'journal',
+        title,
+        extra: { source: 'github', source_id: sourceId, ...(project ? { project } : {}) }
+      });
+    await store.stageCandidate(mk('gh-1', 'A', 'old'));
+    await store.stageCandidate(mk('gh-2', 'B', 'old'));
+    await store.stageCandidate(mk('gh-3', 'C', 'other'));
+    await store.stageCandidate(mk('gh-4', 'D')); // no project at all
+
+    const moved = await store.relabelCandidateProject('old', 'new');
+    expect(moved).toBe(2);
+
+    const after = await store.listCandidates();
+    const bySource = Object.fromEntries(
+      after.map((c) => [c.frontmatter.source_id, c.frontmatter.project])
+    );
+    expect(bySource['gh-1']).toBe('new');
+    expect(bySource['gh-2']).toBe('new');
+    expect(bySource['gh-3']).toBe('other'); // untouched
+    expect(bySource['gh-4']).toBeUndefined(); // untouched
+
+    // No-ops: an empty source slug or a slug equal to itself rewrite nothing.
+    expect(await store.relabelCandidateProject('', 'x')).toBe(0);
+    expect(await store.relabelCandidateProject('new', 'new')).toBe(0);
+  });
 });
 
 describe('reject log carries a learnable title (triage refinement)', () => {

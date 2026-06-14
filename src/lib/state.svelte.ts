@@ -340,6 +340,40 @@ class AppState {
     });
   }
 
+  /** Authoritative check for an existing `type: project` entry with this slug,
+   * across all privacy levels — the inbox prompt must not offer to re-create a
+   * project that already exists but happens to be private. */
+  async projectExists(slug: string): Promise<boolean> {
+    const s = slug.trim();
+    if (!this.store || !s) return false;
+    const projects = await this.store.listProjects(true);
+    return projects.some((p) => p.slug === s);
+  }
+
+  /**
+   * Create a new `type: project` entry titled `name` for a candidate whose
+   * affiliation slug (`oldSlug`) has no project yet (inbox promote gate). After
+   * minting the project, every other staged candidate that referenced `oldSlug`
+   * is relabelled to the new project's slug, so the rest of the inbox follows
+   * the (possibly edited) name in one pass. Reloads candidates + projects so the
+   * picker shows the new project immediately. Returns the new project's slug, or
+   * null if creation failed.
+   */
+  async createProjectFromCandidate(name: string, oldSlug: string): Promise<string | null> {
+    if (!this.store) return null;
+    return this.guard(async () => {
+      const project = await this.store!.createEntry({ type: 'project', title: name.trim() });
+      const newSlug = typeof project.frontmatter.slug === 'string' ? project.frontmatter.slug : '';
+      const moved = newSlug ? await this.store!.relabelCandidateProject(oldSlug, newSlug) : 0;
+      this.candidates = await this.store!.listCandidates();
+      await this.refresh();
+      this.message =
+        `Created project “${project.frontmatter.title}”` +
+        (moved ? ` · moved ${moved} other inbox item${moved === 1 ? '' : 's'} to it` : '');
+      return newSlug;
+    });
+  }
+
   /** Reject a candidate: remembered so it is never re-proposed (plan §1). */
   async rejectCandidate(candidatePath: string, title = ''): Promise<void> {
     if (!this.store) return;
