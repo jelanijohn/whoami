@@ -61,22 +61,50 @@
     selectedPaths = next;
   }
 
-  // Promoting an item whose assigned project doesn't exist yet pauses to offer
-  // creating it (with an editable name) before the entry lands. Declining
-  // promotes as-is — the slug rides along as a pass-through, the prior
-  // behaviour. Creating it also relabels every other inbox item on the old slug
-  // so the rest of the inbox follows the (possibly edited) name in one pass.
-  let pendingPromote = $state<{ path: string; slug: string } | null>(null);
+  // Promoting items whose assigned project doesn't exist yet pauses to resolve
+  // each missing project before the entries land — create it (with an editable
+  // name), file under an existing project, or promote as-is (the slug rides
+  // along as a pass-through, the prior behaviour). Single and bulk promote share
+  // this one resolver: it walks the *distinct* missing slugs (resolving once per
+  // slug, not per item), and creating a project also relabels every other inbox
+  // item on that slug, so the rest of the inbox follows the chosen name in one
+  // pass. `resolutions` maps each old slug to the slug the items finally land on.
+  type PromoteItem = { path: string; project: string };
+  let promoteItems = $state<PromoteItem[] | null>(null); // full set awaiting promotion
+  let unresolved = $state<string[]>([]); // distinct missing slugs, FIFO
+  let resolveTotal = $state(0); // count for the "X of Y" progress hint
+  let resolutions = new Map<string, string>(); // oldSlug -> final slug
   let newProjectName = $state('');
+  // A slug chosen from the dialog's existing-projects picker. When set, the
+  // items on the current slug are filed under it instead of creating a project.
+  let existingProject = $state('');
+  const currentSlug = $derived(unresolved[0] ?? null);
 
-  async function promote(path: string, project: string) {
-    const slug = project.trim();
-    if (slug && !(await app.projectExists(slug))) {
-      newProjectName = humanizeSlug(slug);
-      pendingPromote = { path, slug };
+  /** Resolve every missing project among `items`, then promote them. Items whose
+   * project already exists (or is none) need no prompt. */
+  async function beginPromote(items: PromoteItem[]) {
+    if (items.length === 0) return;
+    const distinct = [...new Set(items.map((i) => i.project.trim()).filter(Boolean))];
+    const missing = distinct.filter((slug) => !app.projects.some((p) => p.slug === slug));
+    if (missing.length === 0) {
+      await app.promoteCandidates(items);
       return;
     }
-    await app.promoteCandidate(path, slug);
+    promoteItems = items;
+    resolutions = new Map();
+    unresolved = missing;
+    resolveTotal = missing.length;
+    primeDialog();
+  }
+
+  /** Seed the dialog fields for whichever slug is now at the head of the queue. */
+  function primeDialog() {
+    newProjectName = currentSlug ? humanizeSlug(currentSlug) : '';
+    existingProject = '';
+  }
+
+  async function promote(path: string, project: string) {
+    await beginPromote([{ path, project: project.trim() }]);
   }
 
   /** A friendly default project name from a kebab/snake-case slug. */
@@ -89,34 +117,66 @@
   }
 
   // The slug the typed name will actually produce, plus how many *other* staged
-  // items currently ride the old slug (they'll move to the new project too).
+  // items (not in this batch) ride the current slug — they'll move to the new
+  // project too when it's created.
   const previewSlug = $derived(slugify(newProjectName));
   const affectedOthers = $derived(
-    pendingPromote
+    currentSlug
       ? app.candidates.filter(
-          (c) => c.path !== pendingPromote!.path && c.frontmatter.project === pendingPromote!.slug
+          (c) =>
+            c.frontmatter.project === currentSlug &&
+            !promoteItems?.some((i) => i.path === c.path)
         ).length
       : 0
   );
 
-  async function confirmCreateProject() {
-    if (!pendingPromote) return;
-    const { path, slug } = pendingPromote;
-    if (!newProjectName.trim()) return; // Create is disabled when empty, but guard anyway
-    pendingPromote = null;
-    const newSlug = await app.createProjectFromCandidate(newProjectName, slug);
-    await app.promoteCandidate(path, newSlug || slug);
+  /** Advance the queue; finalize once every missing slug has a decision. */
+  function advance() {
+    unresolved = unresolved.slice(1);
+    if (unresolved.length === 0) void finalize();
+    else primeDialog();
   }
 
-  async function skipCreateProject() {
-    if (!pendingPromote) return;
-    const { path, slug } = pendingPromote;
-    pendingPromote = null;
-    await app.promoteCandidate(path, slug); // continue as normal — slug stays a pass-through
+  /** Promote the whole batch, mapping each item's slug through `resolutions`. */
+  async function finalize() {
+    const items = promoteItems!.map((i) => ({
+      path: i.path,
+      project: resolutions.get(i.project.trim()) ?? i.project
+    }));
+    reset();
+    clearSelection();
+    await app.promoteCandidates(items);
+  }
+
+  function reset() {
+    promoteItems = null;
+    unresolved = [];
+    resolveTotal = 0;
+    resolutions = new Map();
+  }
+
+  async function resolveCreate() {
+    if (!currentSlug || !newProjectName.trim()) return; // Create is disabled when empty; guard anyway
+    const newSlug = await app.createProjectFromCandidate(newProjectName, currentSlug);
+    resolutions.set(currentSlug, newSlug || currentSlug);
+    advance();
+  }
+
+  function resolveExisting() {
+    if (!currentSlug || !existingProject) return;
+    resolutions.set(currentSlug, existingProject); // file under the chosen project; create nothing
+    advance();
+  }
+
+  function resolveSkip() {
+    if (!currentSlug) return;
+    resolutions.set(currentSlug, currentSlug); // promote as-is — slug stays a pass-through
+    advance();
   }
 
   function cancelPromote() {
-    pendingPromote = null; // abort entirely: nothing promoted, nothing created
+    reset(); // abort the whole batch: nothing promoted, nothing created
+    clearSelection();
   }
 
   /** Focus + select the name field when the dialog opens. */
@@ -142,8 +202,11 @@
           : bulkProject
     }));
     if (items.length === 0) return;
+    // Clear the selection up front: the items are already captured, and the
+    // bulk info bar shouldn't linger whether promotion finishes immediately or
+    // detours through the project-resolution dialog (finalize/cancel also clear).
     clearSelection();
-    await app.promoteCandidates(items);
+    await beginPromote(items);
   }
   async function rejectSelected() {
     const paths = app.candidates.filter(isSelected).map((c) => c.path!);
@@ -163,7 +226,7 @@
 
 <svelte:window
   onkeydown={(e) => {
-    if (pendingPromote && e.key === 'Escape') cancelPromote();
+    if (currentSlug && e.key === 'Escape') cancelPromote();
   }}
 />
 
@@ -334,7 +397,7 @@
   {/if}
 </div>
 
-{#if pendingPromote}
+{#if currentSlug}
   <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
     <div
       class="w-full max-w-md space-y-3 rounded-lg border border-[var(--color-line)] bg-white p-5 shadow-lg dark:bg-[#1e1f24]"
@@ -342,10 +405,17 @@
       aria-modal="true"
       aria-labelledby="new-project-title"
     >
-      <h2 id="new-project-title" class="text-base font-semibold">New project?</h2>
+      <div class="flex items-baseline justify-between gap-2">
+        <h2 id="new-project-title" class="text-base font-semibold">New project?</h2>
+        {#if resolveTotal > 1}
+          <span class="text-xs text-[var(--color-muted)]">
+            Project {resolveTotal - unresolved.length + 1} of {resolveTotal}
+          </span>
+        {/if}
+      </div>
       <p class="text-sm text-[var(--color-muted)]">
-        This item is filed under
-        <code class="rounded bg-gray-100 px-1 py-0.5 text-xs dark:bg-white/10">{pendingPromote.slug}</code>, which
+        Filed under
+        <code class="rounded bg-gray-100 px-1 py-0.5 text-xs dark:bg-white/10">{currentSlug}</code>, which
         isn't a project yet. Create it now — you can rename it — or promote without creating one.
       </p>
 
@@ -357,10 +427,25 @@
           placeholder="Project name"
           class="mt-1 rounded border border-[var(--color-line)] px-2 py-1.5 text-sm"
           onkeydown={(e) => {
-            if (e.key === 'Enter') void confirmCreateProject();
+            if (e.key === 'Enter') void resolveCreate();
           }}
         />
       </label>
+
+      {#if app.projects.length}
+        <label class="flex flex-col text-xs font-medium text-[var(--color-muted)]">
+          …or file under an existing project
+          <select
+            bind:value={existingProject}
+            class="mt-1 rounded border border-[var(--color-line)] px-2 py-1.5 text-sm"
+          >
+            <option value="">— choose a project —</option>
+            {#each app.projects as p (p.slug)}
+              <option value={p.slug}>{p.entry.frontmatter.title}</option>
+            {/each}
+          </select>
+        </label>
+      {/if}
 
       <p class="text-xs text-[var(--color-muted)]">
         {#if previewSlug}
@@ -370,7 +455,7 @@
         {/if}
         {#if affectedOthers}
           · {affectedOthers} other inbox item{affectedOthers === 1 ? '' : 's'} on
-          <code class="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/10">{pendingPromote.slug}</code> will move to it.
+          <code class="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/10">{currentSlug}</code> will move to it.
         {/if}
       </p>
 
@@ -384,17 +469,27 @@
         <button
           class="rounded border border-[var(--color-line)] px-3 py-1.5 text-sm hover:bg-gray-50 disabled:opacity-50 dark:hover:bg-white/5"
           disabled={app.busy}
-          onclick={() => void skipCreateProject()}
+          onclick={() => void resolveSkip()}
         >
           Promote anyway
         </button>
-        <button
-          class="rounded bg-[var(--color-accent)] px-3 py-1.5 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
-          disabled={app.busy || !newProjectName.trim()}
-          onclick={() => void confirmCreateProject()}
-        >
-          Create &amp; promote
-        </button>
+        {#if existingProject}
+          <button
+            class="rounded bg-[var(--color-accent)] px-3 py-1.5 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
+            disabled={app.busy}
+            onclick={() => void resolveExisting()}
+          >
+            Promote to project
+          </button>
+        {:else}
+          <button
+            class="rounded bg-[var(--color-accent)] px-3 py-1.5 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
+            disabled={app.busy || !newProjectName.trim()}
+            onclick={() => void resolveCreate()}
+          >
+            Create &amp; promote
+          </button>
+        {/if}
       </div>
     </div>
   </div>

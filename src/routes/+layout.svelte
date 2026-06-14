@@ -1,107 +1,24 @@
 <script lang="ts">
   import '../app.css';
   import { onMount } from 'svelte';
-  import { page } from '$app/state';
   import { app } from '$lib/state.svelte';
   import { theme } from '$lib/theme.svelte';
+  import { appearance } from '$lib/appearance.svelte';
+  import Titlebar from '$lib/components/Titlebar.svelte';
 
   let { children } = $props();
 
   onMount(() => {
     theme.init();
+    appearance.init();
     app.init();
   });
-
-  const nav = [
-    { href: '/', label: 'Journal' },
-    { href: '/import', label: 'Import' },
-    { href: '/inbox', label: 'Inbox' },
-    { href: '/projects', label: 'Projects' },
-    { href: '/profile', label: 'Profile' },
-    { href: '/resume', label: 'Resume' },
-    { href: '/site', label: 'Personal site' },
-    { href: '/data', label: 'Data' }
-  ];
-
-  const gitChip = $derived.by(() => {
-    const g = app.git;
-    if (!g) return null;
-    if (!g.isRepo) return { text: 'no git', tone: 'muted' };
-    if (g.inProgress) return { text: 'conflict — resolve by hand', tone: 'warn' };
-    const bits: string[] = [];
-    if (!g.clean) bits.push(`${g.changedFiles} changed`);
-    if (g.ahead) bits.push(`↑${g.ahead}`);
-    if (g.behind) bits.push(`↓${g.behind}`);
-    if (!bits.length) return { text: `clean · ${g.branch ?? ''}`, tone: 'ok' };
-    return { text: bits.join(' · '), tone: g.clean ? 'ok' : 'warn' };
-  });
-
-  function folderName(path: string | null): string {
-    if (!path) return '';
-    const parts = path.split(/[\\/]/).filter(Boolean);
-    return parts[parts.length - 1] ?? path;
-  }
 </script>
 
 <div class="flex h-full flex-col">
-  <!-- Top bar -->
-  <header class="flex items-center gap-3 border-b border-[var(--color-line)] bg-white px-4 py-2 dark:bg-[#1e1f24]">
-    <span class="font-semibold tracking-tight">Who Am I</span>
-
-    <nav class="flex items-center gap-1">
-      {#each nav as item (item.href)}
-        <a
-          href={item.href}
-          class="rounded px-2.5 py-1 text-sm {page.url.pathname === item.href
-            ? 'bg-[var(--color-accent)]/10 text-[var(--color-accent)] font-medium'
-            : 'text-[var(--color-muted)] hover:bg-gray-100 dark:hover:bg-white/10'}"
-        >
-          {item.label}
-        </a>
-      {/each}
-    </nav>
-
-    <div class="ml-auto flex items-center gap-2">
-      {#if app.busy}
-        <span class="text-xs text-[var(--color-muted)]">working…</span>
-      {/if}
-      {#if gitChip}
-        <span
-          class="rounded px-2 py-0.5 text-xs {gitChip.tone === 'ok'
-            ? 'bg-green-100 text-green-700 dark:bg-green-500/15 dark:text-green-300'
-            : gitChip.tone === 'warn'
-              ? 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300'
-              : 'bg-gray-100 text-gray-500 dark:bg-white/10 dark:text-gray-400'}"
-        >
-          {gitChip.text}
-        </span>
-      {/if}
-      <button
-        class="rounded border border-[var(--color-line)] px-2 py-1 text-xs hover:bg-gray-50 dark:hover:bg-white/5"
-        title={theme.current === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
-        aria-label="Toggle dark mode"
-        onclick={() => theme.toggle()}
-      >
-        {theme.current === 'dark' ? '☀️' : '🌙'}
-      </button>
-      {#if app.recordRoot}
-        <button
-          class="rounded border border-[var(--color-line)] px-2 py-1 text-xs hover:bg-gray-50 dark:hover:bg-white/5"
-          title={app.recordRoot}
-          onclick={() => app.chooseFolder()}
-        >
-          📁 {folderName(app.recordRoot)}
-        </button>
-        <button
-          class="rounded bg-[var(--color-accent)] px-2.5 py-1 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
-          disabled={app.busy}
-          onclick={() => app.sync()}
-        >
-          Sync
-        </button>
-      {/if}
-    </div>
-  </header>
+  <!-- Unified window-chrome header: brand + open-record breadcrumb + actions,
+       with the section tabs on the second row. -->
+  <Titlebar />
 
   <!-- Toast -->
   {#if app.error}

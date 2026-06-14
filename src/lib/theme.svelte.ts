@@ -26,7 +26,8 @@ class ThemeState {
     this.set(this.current === 'dark' ? 'light' : 'dark');
   }
 
-  private set(theme: Theme): void {
+  /** Set the theme directly (used by the appearance menu's segmented control). */
+  set(theme: Theme): void {
     this.current = theme;
     document.documentElement.classList.toggle('dark', theme === 'dark');
     if (typeof localStorage !== 'undefined') localStorage.setItem(LS_THEME, theme);

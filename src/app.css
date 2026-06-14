@@ -14,6 +14,7 @@
   --color-line: #e4e4df;
   --color-accent: #3b5bdb;
   --color-private: #b54708;
+  --color-bar: #ffffff; /* window-chrome / titlebar surface */
 }
 
 :root {
@@ -31,6 +32,7 @@
   --color-line: #34353c;
   --color-accent: #5a72e8;
   --color-private: #f0883e;
+  --color-bar: #1e1f24; /* window-chrome / titlebar surface */
 }
 
 html,

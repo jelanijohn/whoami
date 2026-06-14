@@ -57,6 +57,21 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_sql::Builder::default().build())
+        .setup(|_app| {
+            // The custom unified header (Titlebar.svelte) draws the window
+            // chrome. macOS keeps its native traffic lights via the Overlay
+            // title-bar style (tauri.conf.json); every other platform draws its
+            // own min/maximize/close caption buttons, so turn the OS frame off
+            // there.
+            #[cfg(not(target_os = "macos"))]
+            {
+                use tauri::Manager;
+                if let Some(win) = _app.get_webview_window("main") {
+                    let _ = win.set_decorations(false);
+                }
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             secret_get,
             secret_set,
