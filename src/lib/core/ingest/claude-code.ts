@@ -38,6 +38,16 @@ export function claudeCodeRootAllowed(rootDir: string, allow: readonly string[])
   return allow.some((p) => rootDir === p || rootDir.endsWith('-' + p));
 }
 
+/**
+ * Human-facing project name for a sanitized-cwd root dir. The dir name encodes
+ * the absolute cwd with `/`→`-`, so the project basename is its trailing
+ * `-`-segment (`-root-Projects-whoami` → `whoami`). Falls back to the raw dir
+ * name when it has no segments. Used to label the import picker.
+ */
+export function claudeCodeProjectName(rootDir: string): string {
+  return rootDir.split('-').filter(Boolean).pop() ?? rootDir;
+}
+
 /** Tools whose `file_path` input is a genuine file mutation (excludes `Read`). */
 const MUTATING_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 

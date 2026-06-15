@@ -57,6 +57,12 @@
     await app.importGmail({ query: m.query.trim(), limit: m.limit || undefined });
   }
 
+  /** Toggle one Claude Code project root in/out of the import selection. */
+  function toggleClaudeCode(root: string) {
+    const sel = app.claudeCodeSelected;
+    app.claudeCodeSelected = sel.includes(root) ? sel.filter((r) => r !== root) : [...sel, root];
+  }
+
   const inputCls =
     'mt-0.5 rounded border border-[var(--color-line)] px-2 py-1.5 text-sm';
   const btnCls =
@@ -319,13 +325,48 @@
       candidate; only your genuine typed turns become the body (assistant prose is excluded).
     </p>
     <p class="text-xs text-[var(--color-private)]">
-      Most sensitive source here, so it never touches the cloud: scoped to the
-      <strong>whoami</strong> and <strong>waid</strong> projects only, a local prefilter runs (no LLM
-      triage), and every candidate is private by default until you promote it.
+      Most sensitive source here, so it never touches the cloud: you pick which projects to import, a
+      local prefilter runs (no LLM triage), and every candidate is private by default until you
+      promote it.
     </p>
-    <button class={runCls} disabled={app.busy} onclick={() => app.importClaudeCode()}>
-      Import Claude Code history
+    <button class={btnCls} disabled={app.busy} onclick={() => app.loadClaudeCodeProjects()}>
+      {app.claudeCodeProjects.length ? 'Rescan projects' : 'Find projects'}
     </button>
+    {#if app.claudeCodeProjects.length > 0}
+      <fieldset class="space-y-1 rounded border border-[var(--color-line)] p-3">
+        <legend class="flex items-center gap-3 px-1 text-xs text-[var(--color-muted)]">
+          <span>{app.claudeCodeSelected.length} of {app.claudeCodeProjects.length} selected</span>
+          <button class="text-[var(--color-accent)] hover:underline" onclick={() => (app.claudeCodeSelected = app.claudeCodeProjects.map((p) => p.root))}>
+            all
+          </button>
+          <button class="text-[var(--color-muted)] hover:underline" onclick={() => (app.claudeCodeSelected = [])}>
+            none
+          </button>
+        </legend>
+        <div class="max-h-56 space-y-1 overflow-y-auto">
+          {#each app.claudeCodeProjects as p (p.root)}
+            <label class="flex items-center gap-2 text-sm" title={p.root}>
+              <input
+                type="checkbox"
+                checked={app.claudeCodeSelected.includes(p.root)}
+                onchange={() => toggleClaudeCode(p.root)}
+              />
+              <span class="font-medium">{p.name}</span>
+              <span class="text-xs text-[var(--color-muted)]">
+                {p.sessions} session{p.sessions === 1 ? '' : 's'}
+              </span>
+            </label>
+          {/each}
+        </div>
+      </fieldset>
+      <button
+        class={runCls}
+        disabled={app.busy || app.claudeCodeSelected.length === 0}
+        onclick={() => app.importClaudeCode($state.snapshot(app.claudeCodeSelected))}
+      >
+        Import {app.claudeCodeSelected.length} project{app.claudeCodeSelected.length === 1 ? '' : 's'}
+      </button>
+    {/if}
   </section>
 
   <!-- Résumé -->

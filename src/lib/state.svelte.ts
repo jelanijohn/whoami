@@ -24,6 +24,7 @@ import {
   importLinkedinArchive,
   importClaudeCodeSessions,
   claudeCodeRootAllowed,
+  claudeCodeProjectName,
   CLAUDE_CODE_DEFAULT_PROJECTS,
   parseResume,
   stageItems,
@@ -152,6 +153,14 @@ class AppState {
   /** Asana projects fetched for the import picker (empty until "Load projects").
    * Transient — project gids are account-specific, so it is not persisted. */
   asanaProjects = $state<AsanaProject[]>([]);
+  /** Claude Code projects discovered under `~/.claude/projects/` (empty until
+   * "Find projects"). Each carries the raw sanitized-cwd root dir, a friendly
+   * name, and its count of top-level session files. Transient — the roots are
+   * machine-specific, so this is not persisted. */
+  claudeCodeProjects = $state<{ root: string; name: string; sessions: number }[]>([]);
+  /** Root dir names the user has selected to import (subset of
+   * {@link claudeCodeProjects}). Transient, like the discovered list. */
+  claudeCodeSelected = $state<string[]>([]);
   /** Result of the most recent import run, surfaced after each fetch. */
   lastImportReport = $state<IngestReport | null>(null);
   /** Persisted LLM provider choice (plan §3), or null when none is configured. */
@@ -552,6 +561,36 @@ class AppState {
     });
   }
 
+  /**
+   * Enumerate the projects under `~/.claude/projects/` to populate the Claude
+   * Code import picker. Each root dir holds one project's session logs; we count
+   * its top-level `*.jsonl` files and skip roots with none (Claude Code internals
+   * like `memory/`). The previously-default scope (whoami/waid) is pre-selected
+   * when present, so the common case stays one extra click — but every project is
+   * now offered, and the human chooses the scope (spec §7 opt-in stays explicit).
+   */
+  async loadClaudeCodeProjects(): Promise<void> {
+    await this.guard(async () => {
+      if (!this.platform) throw new Error('Open a record folder first');
+      const fs = this.platform.fs;
+      const projectsDir = await join(await homeDir(), '.claude', 'projects');
+      const roots = await fs.readDir(projectsDir);
+      const found: { root: string; name: string; sessions: number }[] = [];
+      for (const root of roots) {
+        const rootPath = await join(projectsDir, root);
+        const sessions = (await fs.readDir(rootPath)).filter((n) => n.endsWith('.jsonl')).length;
+        if (sessions > 0) found.push({ root, name: claudeCodeProjectName(root), sessions });
+      }
+      found.sort((a, b) => a.name.localeCompare(b.name));
+      this.claudeCodeProjects = found;
+      this.claudeCodeSelected = found
+        .filter((f) => claudeCodeRootAllowed(f.root, CLAUDE_CODE_DEFAULT_PROJECTS))
+        .map((f) => f.root);
+      if (found.length === 0) throw new Error(`No Claude Code projects with sessions under ${projectsDir}`);
+      this.message = `Found ${found.length} Claude Code project${found.length === 1 ? '' : 's'}`;
+    });
+  }
+
   /** The effective triage rubric: shipped defaults overlaid with any owner
    * overrides persisted in `importSettings` (never the record repo, spec §5). */
   private triageRubric(): TriageRubric {
@@ -662,31 +701,27 @@ class AppState {
 
   /**
    * Claude Code history import (claude-code-adapter spec §3, §9): zero-auth,
-   * import-only. The platform read layer enumerates `~/.claude/projects/`,
-   * reads only the **allowed** roots' top-level `*.jsonl` files (per-project
-   * opt-in, spec §7), and hands the text to the pure core mapper. No token, no
-   * network — local files → candidates. Returns null when no sessions are found.
+   * import-only. Given the `roots` the human selected in the picker (fed by
+   * {@link loadClaudeCodeProjects}), reads only those roots' top-level `*.jsonl`
+   * files and hands the text to the pure core mapper. Per-project opt-in (spec
+   * §7) is preserved — the human chooses the scope rather than a fixed allowlist.
+   * No token, no network — local files → candidates. Returns null when no
+   * sessions are found.
    *
    * Chat history is the most sensitive source in the system (spec §7), so this
    * runs **prefilter-only** like LinkedIn/résumé — session content is never sent
    * to a cloud triage model — and every candidate stays private by default.
    */
-  async importClaudeCode(): Promise<IngestReport | null> {
+  async importClaudeCode(roots: string[]): Promise<IngestReport | null> {
     return this.guard(async () => {
       if (!this.store || !this.platform) throw new Error('Open a record folder first');
+      if (roots.length === 0) throw new Error('Select at least one Claude Code project to import');
       const fs = this.platform.fs;
       const projectsDir = await join(await homeDir(), '.claude', 'projects');
-      const roots = await fs.readDir(projectsDir);
-      const allowed = roots.filter((r) => claudeCodeRootAllowed(r, CLAUDE_CODE_DEFAULT_PROJECTS));
-      if (allowed.length === 0) {
-        throw new Error(
-          `No Claude Code projects in scope under ${projectsDir} (allowed: ${CLAUDE_CODE_DEFAULT_PROJECTS.join(', ')})`
-        );
-      }
-      // Read only top-level *.jsonl per allowed root — sibling session-id dirs
+      // Read only top-level *.jsonl per selected root — sibling session-id dirs
       // and memory/ are Claude Code internals and stay ignored (spec §2).
       const files: Record<string, string> = {};
-      for (const root of allowed) {
+      for (const root of roots) {
         const rootPath = await join(projectsDir, root);
         for (const name of await fs.readDir(rootPath)) {
           if (!name.endsWith('.jsonl')) continue;

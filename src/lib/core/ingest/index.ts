@@ -72,6 +72,7 @@ export {
   mapClaudeCodeSession,
   importClaudeCodeSessions,
   claudeCodeRootAllowed,
+  claudeCodeProjectName,
   CLAUDE_CODE_DEFAULT_PROJECTS
 } from './claude-code';
 export { rawItemToEntryInput, stageItems, selectNewItems } from './pipeline';
