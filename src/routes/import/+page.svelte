@@ -309,6 +309,25 @@
     </button>
   </section>
 
+  <!-- Claude Code -->
+  <section class="space-y-2 border-t border-[var(--color-line)] pt-5">
+    <h2 class="text-sm font-semibold">Claude Code (session history)</h2>
+    <p class="text-xs text-[var(--color-muted)]">
+      Zero-auth, import-only. Reads your local Claude Code session logs from
+      <code>~/.claude/projects/</code> and stages one candidate per session — your questions are a
+      timestamped diary of what you were trying to do, pre-anchored to a project. One session = one
+      candidate; only your genuine typed turns become the body (assistant prose is excluded).
+    </p>
+    <p class="text-xs text-[var(--color-private)]">
+      Most sensitive source here, so it never touches the cloud: scoped to the
+      <strong>whoami</strong> and <strong>waid</strong> projects only, a local prefilter runs (no LLM
+      triage), and every candidate is private by default until you promote it.
+    </p>
+    <button class={runCls} disabled={app.busy} onclick={() => app.importClaudeCode()}>
+      Import Claude Code history
+    </button>
+  </section>
+
   <!-- Résumé -->
   <section class="space-y-2 border-t border-[var(--color-line)] pt-5">
     <h2 class="text-sm font-semibold">Résumé (PDF/DOCX)</h2>

@@ -22,6 +22,9 @@ import {
   validateAsana,
   validateGmail,
   importLinkedinArchive,
+  importClaudeCodeSessions,
+  claudeCodeRootAllowed,
+  CLAUDE_CODE_DEFAULT_PROJECTS,
   parseResume,
   stageItems,
   selectNewItems,
@@ -54,6 +57,7 @@ import {
 } from './core';
 import { createTauriPlatform } from './platform-tauri';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
+import { homeDir, join } from '@tauri-apps/api/path';
 
 const LS_KEY = 'whoami:recordRoot';
 const LS_LLM = 'whoami:llm';
@@ -652,6 +656,55 @@ class AppState {
       await this.loadCandidates();
       const known = report.skippedPromoted + report.skippedRejected;
       this.message = `linkedin: staged ${report.staged}, ${known} already known${report.errors.length ? `, ${report.errors.length} errors` : ''}`;
+      return report;
+    });
+  }
+
+  /**
+   * Claude Code history import (claude-code-adapter spec §3, §9): zero-auth,
+   * import-only. The platform read layer enumerates `~/.claude/projects/`,
+   * reads only the **allowed** roots' top-level `*.jsonl` files (per-project
+   * opt-in, spec §7), and hands the text to the pure core mapper. No token, no
+   * network — local files → candidates. Returns null when no sessions are found.
+   *
+   * Chat history is the most sensitive source in the system (spec §7), so this
+   * runs **prefilter-only** like LinkedIn/résumé — session content is never sent
+   * to a cloud triage model — and every candidate stays private by default.
+   */
+  async importClaudeCode(): Promise<IngestReport | null> {
+    return this.guard(async () => {
+      if (!this.store || !this.platform) throw new Error('Open a record folder first');
+      const fs = this.platform.fs;
+      const projectsDir = await join(await homeDir(), '.claude', 'projects');
+      const roots = await fs.readDir(projectsDir);
+      const allowed = roots.filter((r) => claudeCodeRootAllowed(r, CLAUDE_CODE_DEFAULT_PROJECTS));
+      if (allowed.length === 0) {
+        throw new Error(
+          `No Claude Code projects in scope under ${projectsDir} (allowed: ${CLAUDE_CODE_DEFAULT_PROJECTS.join(', ')})`
+        );
+      }
+      // Read only top-level *.jsonl per allowed root — sibling session-id dirs
+      // and memory/ are Claude Code internals and stay ignored (spec §2).
+      const files: Record<string, string> = {};
+      for (const root of allowed) {
+        const rootPath = await join(projectsDir, root);
+        for (const name of await fs.readDir(rootPath)) {
+          if (!name.endsWith('.jsonl')) continue;
+          const path = await join(rootPath, name);
+          files[path] = await fs.readTextFile(path);
+        }
+      }
+      const items = importClaudeCodeSessions(files);
+      if (items.length === 0) {
+        throw new Error('No Claude Code sessions with a genuine human turn found in scope');
+      }
+      const fresh = await selectNewItems(this.store, items);
+      const signals = await this.triageFresh(fresh, false);
+      const report = await stageItems(this.store, items, { signals, project: this.importProject });
+      this.lastImportReport = report;
+      await this.loadCandidates();
+      const known = report.skippedPromoted + report.skippedRejected;
+      this.message = `claude-code: staged ${report.staged}, ${known} already known${report.errors.length ? `, ${report.errors.length} errors` : ''}`;
       return report;
     });
   }

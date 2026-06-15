@@ -68,5 +68,10 @@ export {
   type ParseResumeOpts,
   type ParseResumeResult
 } from './resume';
-export { mapClaudeCodeSession, importClaudeCodeSessions } from './claude-code';
+export {
+  mapClaudeCodeSession,
+  importClaudeCodeSessions,
+  claudeCodeRootAllowed,
+  CLAUDE_CODE_DEFAULT_PROJECTS
+} from './claude-code';
 export { rawItemToEntryInput, stageItems, selectNewItems } from './pipeline';

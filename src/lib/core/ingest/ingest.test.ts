@@ -34,7 +34,12 @@ import {
   mapLinkedinPositions,
   importLinkedinArchive
 } from './linkedin';
-import { mapClaudeCodeSession, importClaudeCodeSessions } from './claude-code';
+import {
+  mapClaudeCodeSession,
+  importClaudeCodeSessions,
+  claudeCodeRootAllowed,
+  CLAUDE_CODE_DEFAULT_PROJECTS
+} from './claude-code';
 import { rawItemToEntryInput, stageItems } from './pipeline';
 import type { RawItem } from './types';
 
@@ -904,6 +909,16 @@ describe('claude-code adapter', () => {
     );
     const item = mapClaudeCodeSession(s)!;
     expect(item.suggestedTags).toEqual(['claude-code', 'feat-new-thing']);
+  });
+
+  it('scopes import to the allowed project roots (spec §7)', () => {
+    const allow = CLAUDE_CODE_DEFAULT_PROJECTS;
+    expect(claudeCodeRootAllowed('-root-Projects-whoami', allow)).toBe(true);
+    expect(claudeCodeRootAllowed('-Users-jelani-code-waid', allow)).toBe(true); // portable across home paths
+    expect(claudeCodeRootAllowed('waid', allow)).toBe(true); // bare name
+    expect(claudeCodeRootAllowed('-root-Projects-glue', allow)).toBe(false);
+    expect(claudeCodeRootAllowed('-root-Projects-blapp-web', allow)).toBe(false);
+    expect(claudeCodeRootAllowed('memory', allow)).toBe(false);
   });
 
   it('imports many sessions and drops the genuine-turn-less ones', () => {

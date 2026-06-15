@@ -17,6 +17,27 @@
 import { slugify } from '../ids';
 import { asNum, asStr, get, isoDate, type RawItem } from './types';
 
+/**
+ * Default per-project import scope (spec §7): the first import is deliberately
+ * narrowed to these two roots; every other project under `~/.claude/projects/`
+ * is out of scope until added here on purpose. Chat history is the most
+ * sensitive source in the system, so the read layer opts in by project rather
+ * than dumping the whole projects dir. The core mapper holds no privacy logic —
+ * this is the platform read layer's allowlist input.
+ */
+export const CLAUDE_CODE_DEFAULT_PROJECTS = ['whoami', 'waid'] as const;
+
+/**
+ * Is a sanitized-cwd root directory (e.g. `-root-Projects-whoami`) in scope?
+ * The dir name encodes the absolute cwd with `/`→`-`, so its project basename
+ * is the trailing segment. A root is allowed iff its name equals an allowed
+ * project or ends with `-<project>` — portable across machines / home paths
+ * (`/root/Projects/whoami` and `/Users/x/code/whoami` both match `whoami`).
+ */
+export function claudeCodeRootAllowed(rootDir: string, allow: readonly string[]): boolean {
+  return allow.some((p) => rootDir === p || rootDir.endsWith('-' + p));
+}
+
 /** Tools whose `file_path` input is a genuine file mutation (excludes `Read`). */
 const MUTATING_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 
