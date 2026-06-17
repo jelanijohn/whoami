@@ -15,6 +15,7 @@
   --color-accent: #3b5bdb;
   --color-private: #b54708;
   --color-bar: #ffffff; /* window-chrome / titlebar surface */
+  --color-edge: #d4d2ca; /* window edge — slightly darker than --color-line */
 }
 
 :root {
@@ -126,11 +127,14 @@
   --color-accent: #5a72e8;
   --color-private: #f0883e;
   --color-bar: #1e1f24; /* window-chrome / titlebar surface */
+  --color-edge: #2a2c33; /* hairline lighter than the panel so the edge reads */
 }
 
 html,
 body {
-  background-color: var(--color-paper);
+  /* Transparent so the borderless Tauri window shows the desktop through the
+     app panel's rounded corners; the panel itself paints --color-paper. */
+  background-color: transparent;
   color: var(--color-ink);
   font-family:
     ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial,

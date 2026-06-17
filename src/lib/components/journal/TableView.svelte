@@ -12,6 +12,10 @@
     sortDir,
     onsort,
     projectTitle,
+    selectable = false,
+    selected,
+    onselect,
+    onselectall,
     noResults,
     emptyMsg
   }: {
@@ -22,9 +26,20 @@
     sortDir: SortDir;
     onsort: (key: SortKey) => void;
     projectTitle: (slug: string) => string;
+    selectable?: boolean;
+    selected?: SvelteSet<string>;
+    onselect?: (id: string, checked: boolean) => void;
+    onselectall?: (checked: boolean) => void;
     noResults: boolean;
     emptyMsg: string;
   } = $props();
+
+  const allSelected = $derived(
+    selectable && entries.length > 0 && entries.every((e) => selected?.has(String(e.frontmatter.id)))
+  );
+  const someSelected = $derived(
+    selectable && !allSelected && entries.some((e) => selected?.has(String(e.frontmatter.id)))
+  );
 
   const COLUMNS: { key: SortKey | 'tags'; label: string; sortable: boolean }[] = [
     { key: 'date', label: 'Date', sortable: true },
@@ -45,6 +60,18 @@
   <table class="w-full border-collapse text-[13px]" style="min-width:760px;">
     <thead>
       <tr class="bg-[var(--jv-row-detail)]">
+        {#if selectable}
+          <th style="padding:10px 0 10px 14px;width:1%;">
+            <input
+              type="checkbox"
+              class="h-4 w-4 accent-[var(--color-accent)]"
+              checked={allSelected}
+              indeterminate={someSelected}
+              aria-label="Select all"
+              onchange={(e) => onselectall?.(e.currentTarget.checked)}
+            />
+          </th>
+        {/if}
         {#each COLUMNS as col (col.key)}
           {@const active = col.sortable && sortKey === col.key}
           <th
@@ -66,6 +93,17 @@
       {@const expanded = expandedEntries.has(String(e.frontmatter.id))}
       <tbody>
         <tr onclick={() => ontoggleEntry(String(e.frontmatter.id))} class="cursor-pointer border-t border-[var(--jv-hair)]">
+          {#if selectable}
+            <td style="padding:9px 0 9px 14px;width:1%;" onclick={(ev) => ev.stopPropagation()}>
+              <input
+                type="checkbox"
+                class="h-4 w-4 accent-[var(--color-accent)]"
+                checked={selected?.has(String(e.frontmatter.id)) ?? false}
+                aria-label="Select “{e.frontmatter.title}”"
+                onchange={(ev) => onselect?.(String(e.frontmatter.id), ev.currentTarget.checked)}
+              />
+            </td>
+          {/if}
           <td class="whitespace-nowrap tabular-nums text-[var(--jv-date)]" style="padding:9px 14px;">{fmtShort(String(e.frontmatter.date))}</td>
           <td style="padding:9px 14px;">
             <span
@@ -89,6 +127,7 @@
         </tr>
         {#if expanded}
           <tr class="bg-[var(--jv-row-detail)]">
+            {#if selectable}<td></td>{/if}
             <td></td>
             <td colspan="5" style="padding:0 14px 13px;">
               <p class="m-0 whitespace-pre-wrap text-[13px] leading-[1.55] text-[var(--jv-body)]">{e.body}</p>

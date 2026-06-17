@@ -10,7 +10,10 @@
     variant,
     projectTitle,
     onedit,
-    ondelete
+    ondelete,
+    selectable = false,
+    selected = false,
+    onselect
   }: {
     entry: Entry;
     expanded: boolean;
@@ -23,6 +26,10 @@
      * timeline keeps the CRUD it had before the redesign. */
     onedit?: (e: Entry) => void;
     ondelete?: (e: Entry) => void;
+    /** Bulk-select mode: show a leading checkbox that drives multi-edit. */
+    selectable?: boolean;
+    selected?: boolean;
+    onselect?: (id: string, checked: boolean) => void;
   } = $props();
 
   const fm = $derived(entry.frontmatter);
@@ -41,11 +48,21 @@
   });
 </script>
 
-<button
-  onclick={ontoggle}
-  class="flex w-full items-center gap-2.5 border-none bg-transparent text-left"
-  style={variant === 'grouped' ? 'padding:9px 16px 9px 40px;' : 'padding:8px 12px;'}
->
+<div class="flex w-full items-center">
+  {#if selectable}
+    <input
+      type="checkbox"
+      class="ml-3 h-4 w-4 shrink-0 accent-[var(--color-accent)]"
+      checked={selected}
+      aria-label="Select “{fm.title}”"
+      onchange={(e) => onselect?.(String(fm.id), e.currentTarget.checked)}
+    />
+  {/if}
+  <button
+    onclick={ontoggle}
+    class="flex min-w-0 flex-1 items-center gap-2.5 border-none bg-transparent text-left"
+    style={variant === 'grouped' ? 'padding:9px 16px 9px 40px;' : 'padding:8px 12px;'}
+  >
   {#if variant === 'grouped'}
     <span class="w-[84px] shrink-0 text-[11px] tabular-nums text-[var(--jv-date)]">{fmtShort(date)}</span>
     <span class="w-[74px] shrink-0 text-[11px] font-semibold" style="color:{meta.color}">{meta.label}</span>
@@ -72,7 +89,8 @@
       style="transform:rotate({expanded ? 90 : 0}deg)">›</span
     >
   {/if}
-</button>
+  </button>
+</div>
 
 {#if expanded}
   <div class="jv-rise" style={variant === 'grouped' ? 'padding:2px 18px 14px 40px;' : 'padding:0 14px 12px;'}>

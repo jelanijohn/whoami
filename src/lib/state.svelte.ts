@@ -446,6 +446,57 @@ class AppState {
     });
   }
 
+  /** Flip the `private` flag on several entries in one pass. Skips entries
+   * already in the requested state, then writes each through the normal
+   * text-first path and reindexes — a single `refresh()` at the end keeps the
+   * timeline consistent (mirrors {@link promoteCandidates}). */
+  async bulkSetPrivate(entries: Entry[], isPrivate: boolean): Promise<number> {
+    if (!this.store) return 0;
+    const targets = entries.filter((e) => (e.frontmatter.private ?? false) !== isPrivate);
+    if (targets.length === 0) return 0;
+    return (
+      (await this.guard(async () => {
+        let ok = 0;
+        for (const e of targets) {
+          const frontmatter = { ...e.frontmatter, private: isPrivate };
+          await this.store!.updateEntry({ ...e, frontmatter });
+          ok++;
+        }
+        await this.refresh();
+        this.message = `Marked ${ok} ${ok === 1 ? 'entry' : 'entries'} ${isPrivate ? 'private' : 'public'}`;
+        return ok;
+      })) ?? 0
+    );
+  }
+
+  /** Assign (or clear, with an empty slug) the `project` affiliation on several
+   * entries at once — the bulk counterpart of {@link setEntryProject}. */
+  async bulkSetProject(entries: Entry[], slug: string): Promise<number> {
+    if (!this.store) return 0;
+    const project = slug.trim();
+    const targets = entries.filter(
+      (e) => (typeof e.frontmatter.project === 'string' ? e.frontmatter.project : '') !== project
+    );
+    if (targets.length === 0) return 0;
+    return (
+      (await this.guard(async () => {
+        let ok = 0;
+        for (const e of targets) {
+          const frontmatter = { ...e.frontmatter };
+          if (project) frontmatter.project = project;
+          else delete frontmatter.project;
+          await this.store!.updateEntry({ ...e, frontmatter });
+          ok++;
+        }
+        await this.refresh();
+        this.message = project
+          ? `Filed ${ok} ${ok === 1 ? 'entry' : 'entries'} under ${project}`
+          : `Cleared project on ${ok} ${ok === 1 ? 'entry' : 'entries'}`;
+        return ok;
+      })) ?? 0
+    );
+  }
+
   // --- Candidate inbox (ingest review, plan §1–2) ---------------------------
 
   /** Load the staged candidates awaiting review. */

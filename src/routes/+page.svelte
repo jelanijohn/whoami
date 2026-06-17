@@ -45,6 +45,53 @@
   let selectedDay = $state('');
   const today = new Date().toISOString().slice(0, 10);
 
+  // --- Bulk select (multi-edit private/project without the editor) ----------
+  // A "Select" mode reveals row checkboxes; a sticky bar acts on the picked set.
+  // Keyed by entry id (stable ULID), so selection survives a refresh.
+  let selectMode = $state(false);
+  const selected = new SvelteSet<string>();
+  // Calendar is a read-only heatmap — selection only applies to the row views.
+  const canSelect = $derived(app.view !== 'calendar');
+  const selectedEntries = $derived(
+    app.entries.filter((e) => selected.has(String(e.frontmatter.id)))
+  );
+
+  // Bulk project picker: a sentinel default so a stray Apply is a no-op.
+  const SET_PROJECT = '__set__';
+  let bulkProject = $state(SET_PROJECT);
+
+  function toggleSelectMode() {
+    selectMode = !selectMode;
+    if (!selectMode) selected.clear();
+  }
+  function toggleSelect(id: string, checked: boolean) {
+    checked ? selected.add(id) : selected.delete(id);
+  }
+  function clearSelection() {
+    selected.clear();
+  }
+  function setSelectAll(checked: boolean) {
+    if (checked) for (const e of app.entries) selected.add(String(e.frontmatter.id));
+    else selected.clear();
+  }
+  async function bulkPrivate(isPrivate: boolean) {
+    await app.bulkSetPrivate(selectedEntries, isPrivate);
+    selected.clear();
+  }
+  async function bulkApplyProject() {
+    if (bulkProject === SET_PROJECT) return; // nothing chosen yet
+    await app.bulkSetProject(selectedEntries, bulkProject === '' ? '' : bulkProject);
+    bulkProject = SET_PROJECT;
+    selected.clear();
+  }
+  // Leaving a selectable view drops the picked set so the bar can't linger.
+  $effect(() => {
+    if (!canSelect && (selectMode || selected.size)) {
+      selectMode = false;
+      selected.clear();
+    }
+  });
+
   // --- Re-query on filter change (debounced; the query does the work) --------
   let t: ReturnType<typeof setTimeout> | undefined;
   function onFilter() {
@@ -135,21 +182,34 @@
     >
   </div>
 
-  <!-- View switcher -->
-  <div class="mt-5 inline-flex gap-0.5 rounded-[11px] border border-[var(--color-line)] bg-white p-[3px] dark:bg-[var(--color-bar)]">
-    {#each VIEWS as [v, label] (v)}
+  <!-- View switcher + select-mode toggle -->
+  <div class="mt-5 flex flex-wrap items-center gap-2">
+    <div class="inline-flex gap-0.5 rounded-[11px] border border-[var(--color-line)] bg-white p-[3px] dark:bg-[var(--color-bar)]">
+      {#each VIEWS as [v, label] (v)}
+        <button
+          onclick={() => setView(v)}
+          class="rounded-lg px-[15px] py-[7px] text-[13px] transition-all duration-100"
+          class:font-semibold={app.view === v}
+          class:font-medium={app.view !== v}
+          style={app.view === v
+            ? 'background:var(--color-accent);color:#fff;'
+            : 'background:transparent;color:var(--color-muted);'}
+        >
+          {label}
+        </button>
+      {/each}
+    </div>
+    {#if canSelect}
       <button
-        onclick={() => setView(v)}
-        class="rounded-lg px-[15px] py-[7px] text-[13px] transition-all duration-100"
-        class:font-semibold={app.view === v}
-        class:font-medium={app.view !== v}
-        style={app.view === v
-          ? 'background:var(--color-accent);color:#fff;'
-          : 'background:transparent;color:var(--color-muted);'}
+        onclick={toggleSelectMode}
+        class="rounded-[9px] border px-3.5 py-[7px] text-[13px] font-medium transition-colors"
+        style={selectMode
+          ? 'background:var(--color-accent);color:#fff;border-color:var(--color-accent);'
+          : 'background:transparent;color:var(--color-muted);border-color:var(--color-line);'}
       >
-        {label}
+        {selectMode ? 'Done' : 'Select'}
       </button>
-    {/each}
+    {/if}
   </div>
 
   <!-- Filter / sort bar -->
@@ -166,6 +226,62 @@
     {/key}
   {/if}
 
+  <!-- Bulk-action bar (visible in select mode once something is picked) -->
+  {#if selectMode && selected.size > 0}
+    <div
+      class="sticky top-0 z-10 mt-4 flex flex-wrap items-center gap-2 rounded-lg border border-[var(--color-accent)] bg-[var(--color-accent)]/10 px-3 py-2 backdrop-blur"
+    >
+      <span class="text-sm font-medium">{selected.size} selected</span>
+      <button
+        class="rounded px-2 py-0.5 text-xs text-[var(--color-muted)] hover:bg-black/5 dark:hover:bg-white/10"
+        onclick={clearSelection}
+      >
+        Clear
+      </button>
+      <button
+        class="rounded px-2 py-0.5 text-xs text-[var(--color-muted)] hover:bg-black/5 dark:hover:bg-white/10"
+        onclick={() => setSelectAll(true)}
+      >
+        Select all
+      </button>
+      <div class="ml-auto flex flex-wrap items-center gap-2">
+        <button
+          class="rounded px-2.5 py-1 text-xs text-[var(--color-private)] hover:bg-[var(--color-private)]/10 disabled:opacity-50"
+          disabled={app.busy}
+          onclick={() => void bulkPrivate(true)}
+        >
+          Make private
+        </button>
+        <button
+          class="rounded px-2.5 py-1 text-xs text-[var(--color-muted)] hover:bg-black/5 disabled:opacity-50 dark:hover:bg-white/10"
+          disabled={app.busy}
+          onclick={() => void bulkPrivate(false)}
+        >
+          Make public
+        </button>
+        <label class="text-xs text-[var(--color-muted)]" for="bulk-project">Project</label>
+        <select
+          id="bulk-project"
+          bind:value={bulkProject}
+          class="rounded border border-[var(--color-line)] px-2 py-1 text-sm"
+        >
+          <option value={SET_PROJECT}>— set project… —</option>
+          <option value="">— clear project —</option>
+          {#each app.projects as p (p.slug)}
+            <option value={p.slug}>{p.entry.frontmatter.title}</option>
+          {/each}
+        </select>
+        <button
+          class="rounded bg-[var(--color-accent)] px-3 py-1 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
+          disabled={app.busy || bulkProject === SET_PROJECT}
+          onclick={() => void bulkApplyProject()}
+        >
+          Apply
+        </button>
+      </div>
+    </div>
+  {/if}
+
   <!-- Active view -->
   {#if app.view === 'grouped'}
     <GroupedView
@@ -177,6 +293,9 @@
       {projectTitle}
       onedit={startEdit}
       ondelete={remove}
+      selectable={selectMode}
+      {selected}
+      onselect={toggleSelect}
       {noResults}
       {emptyMsg}
     />
@@ -188,6 +307,9 @@
       {projectTitle}
       onedit={startEdit}
       ondelete={remove}
+      selectable={selectMode}
+      {selected}
+      onselect={toggleSelect}
       {noResults}
       {emptyMsg}
     />
@@ -202,6 +324,10 @@
       sortDir={app.sortDir}
       onsort={onSort}
       {projectTitle}
+      selectable={selectMode}
+      {selected}
+      onselect={toggleSelect}
+      onselectall={setSelectAll}
       {noResults}
       {emptyMsg}
     />

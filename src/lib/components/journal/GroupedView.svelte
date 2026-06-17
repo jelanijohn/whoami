@@ -13,6 +13,9 @@
     projectTitle,
     onedit,
     ondelete,
+    selectable = false,
+    selected,
+    onselect,
     noResults,
     emptyMsg
   }: {
@@ -24,6 +27,9 @@
     projectTitle: (slug: string) => string;
     onedit?: (e: Entry) => void;
     ondelete?: (e: Entry) => void;
+    selectable?: boolean;
+    selected?: SvelteSet<string>;
+    onselect?: (id: string, checked: boolean) => void;
     noResults: boolean;
     emptyMsg: string;
   } = $props();
@@ -64,6 +70,9 @@
                 {projectTitle}
                 {onedit}
                 {ondelete}
+                {selectable}
+                selected={selected?.has(String(entry.frontmatter.id)) ?? false}
+                {onselect}
               />
             </div>
           {/each}
