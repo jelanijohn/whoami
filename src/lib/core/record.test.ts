@@ -560,3 +560,39 @@ describe('reduce pipeline (plan §4)', () => {
     await expect(store.reduceProject(llm, 'empty')).rejects.toThrow(/no verifiable facts/);
   });
 });
+
+describe('Journal query extensions (design handoff)', () => {
+  beforeEach(async () => {
+    await store.createEntry({ type: 'win', title: 'Alpha', date: '2024-01-10', tags: ['rust'], extra: { org: 'Acme' } });
+    await store.createEntry({ type: 'journal', title: 'Beta', date: '2024-03-05', tags: ['rust', 'svelte'] });
+    await store.createEntry({ type: 'skill', title: 'Gamma', date: '2024-06-20', tags: ['svelte'], extra: { org: 'Beacon' } });
+    await store.createEntry({ type: 'win', title: 'Delta', date: '2024-09-01' });
+  });
+
+  it('filters by multiple types (types supersedes single type)', async () => {
+    const list = await store.listEntries({ types: ['win', 'skill'] });
+    expect(list.map((e) => e.frontmatter.title).sort()).toEqual(['Alpha', 'Delta', 'Gamma']);
+    // An empty types array means "all types", not "none".
+    expect(await store.listEntries({ types: [] })).toHaveLength(4);
+  });
+
+  it('filters by an inclusive date range', async () => {
+    const list = await store.listEntries({ dateFrom: '2024-03-01', dateTo: '2024-06-30' });
+    expect(list.map((e) => e.frontmatter.title)).toEqual(['Gamma', 'Beta']); // date desc default
+  });
+
+  it('sorts by the chosen key + direction, tie-broken by date desc', async () => {
+    const byTitleAsc = await store.listEntries({ sort: { key: 'title', dir: 'asc' } });
+    expect(byTitleAsc.map((e) => e.frontmatter.title)).toEqual(['Alpha', 'Beta', 'Delta', 'Gamma']);
+    const byDateAsc = await store.listEntries({ sort: { key: 'date', dir: 'asc' } });
+    expect(byDateAsc.map((e) => e.frontmatter.title)).toEqual(['Alpha', 'Beta', 'Gamma', 'Delta']);
+  });
+
+  it('tagCounts ranks tags by frequency', async () => {
+    const counts = await store.tagCounts();
+    expect(counts).toEqual([
+      { tag: 'rust', count: 2 },
+      { tag: 'svelte', count: 2 }
+    ]);
+  });
+});

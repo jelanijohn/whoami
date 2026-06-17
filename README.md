@@ -47,7 +47,10 @@ src/lib/core/        Framework-agnostic TypeScript core (no Tauri, no browser).
 src/lib/platform-tauri.ts  Tauri-backed Platform (sql / fs / shell / http / keyring).
 src/lib/state.svelte.ts    Svelte 5 runes app state driving the UI.
 src/lib/{appearance,theme}.svelte.ts  Appearance + theme (dark mode) preferences.
-src/lib/components/   Titlebar, AppMenu, entry/candidate cards, editor.
+src/lib/journal/      Pure helpers for the Journal views: grouping, date
+                        formatting, and the type/project color palette.
+src/lib/components/   Titlebar, AppMenu, entry/candidate cards, editor, and the
+                        Journal views (Grouped · Timeline · Calendar · Table).
 src/routes/          SvelteKit SPA: Journal · Import · Inbox · Projects ·
                        Profile · Resume · Personal site · Data.
 src-tauri/           Rust shell: registers the fs/sql/shell/dialog/http plugins.

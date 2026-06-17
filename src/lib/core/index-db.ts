@@ -272,17 +272,43 @@ export async function removeByPath(db: Database, relPath: string): Promise<void>
 // Queries — the read side the dashboard / generators consume (spec §6).
 // ---------------------------------------------------------------------------
 
+/** Sort keys the Journal views offer (design handoff). `project`/`org` sort by
+ * the frontmatter pass-through values; the rest map to real columns. */
+export type SortKey = 'date' | 'title' | 'type' | 'project' | 'org';
+export type SortDir = 'asc' | 'desc';
+
 export interface ListFilters {
   /** Include `private: true` entries. Default false — outward-safe by default. */
   includePrivate?: boolean;
   type?: string;
+  /** Multi-type filter (Journal redesign): match any of these types. When
+   * present and non-empty it supersedes {@link type}; empty/absent ⇒ all types. */
+  types?: string[];
   tag?: string;
   /** Affiliation filter: only entries whose `project` key equals this slug
    * (ingest-reduce plan §2.3). Matched against the frontmatter JSON blob. */
   project?: string;
   /** Full-text query across title + body. */
   search?: string;
+  /** Inclusive lower bound on `date` (YYYY-MM-DD). */
+  dateFrom?: string;
+  /** Inclusive upper bound on `date` (YYYY-MM-DD). */
+  dateTo?: string;
+  /** Sort key + direction. Defaults to date/desc; always tie-broken by date desc
+   * so equal keys stay newest-first. */
+  sort?: { key: SortKey; dir: SortDir };
 }
+
+/** SQL expression each sort key maps to. `title` is folded to lower-case for a
+ * case-insensitive sort; `project`/`org` read the frontmatter JSON blob (no
+ * dedicated column), so they sort by the stored value (project slug). */
+const SORT_COLUMNS: Record<SortKey, string> = {
+  date: 'e.date',
+  title: 'lower(e.title)',
+  type: 'e.type',
+  project: `json_extract(e.frontmatter, '$.project')`,
+  org: `json_extract(e.frontmatter, '$.org')`
+};
 
 interface EntryRow extends Row {
   body: string;
@@ -304,9 +330,20 @@ export async function listEntries(db: Database, filters: ListFilters = {}): Prom
   const params: unknown[] = [];
 
   if (!filters.includePrivate) where.push('e.private = 0');
-  if (filters.type) {
+  if (filters.types && filters.types.length) {
+    where.push(`e.type IN (${filters.types.map(() => '?').join(', ')})`);
+    params.push(...filters.types);
+  } else if (filters.type) {
     where.push('e.type = ?');
     params.push(filters.type);
+  }
+  if (filters.dateFrom) {
+    where.push('e.date >= ?');
+    params.push(filters.dateFrom);
+  }
+  if (filters.dateTo) {
+    where.push('e.date <= ?');
+    params.push(filters.dateTo);
   }
   if (filters.tag) {
     where.push('e.id IN (SELECT entry_id FROM tags WHERE tag = ?)');
@@ -324,11 +361,21 @@ export async function listEntries(db: Database, filters: ListFilters = {}): Prom
     params.push(ftsQuery(filters.search));
   }
 
+  // Sort: the chosen key first, then always tie-break by date desc (then created
+  // desc) so equal keys stay newest-first — matching the design prototype.
+  const sort = filters.sort ?? { key: 'date', dir: 'desc' };
+  const col = SORT_COLUMNS[sort.key] ?? SORT_COLUMNS.date;
+  const dir = sort.dir === 'asc' ? 'ASC' : 'DESC';
+  const orderBy =
+    sort.key === 'date'
+      ? `e.date ${dir}, e.created DESC`
+      : `${col} ${dir}, e.date DESC, e.created DESC`;
+
   const sql = `
     SELECT e.body, e.source_path, e.frontmatter
     FROM entries e
     ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
-    ORDER BY e.date DESC, e.created DESC
+    ORDER BY ${orderBy}
   `;
   const rows = await db.select<EntryRow>(sql, params);
   return rows.map(rowToEntry);
@@ -434,6 +481,22 @@ export async function allTags(db: Database, includePrivate = false): Promise<str
      ORDER BY t.tag`
   );
   return rows.map((r) => r.tag);
+}
+
+/** Tags with their usage counts, most-used first (then alphabetical). Powers the
+ * Journal tag filter, which labels each option `#tag (n)` (design handoff). */
+export async function tagCounts(
+  db: Database,
+  includePrivate = false
+): Promise<{ tag: string; count: number }[]> {
+  const rows = await db.select<{ tag: string; n: number }>(
+    `SELECT t.tag AS tag, COUNT(*) AS n FROM tags t
+     JOIN entries e ON e.id = t.entry_id
+     ${includePrivate ? '' : 'WHERE e.private = 0'}
+     GROUP BY t.tag
+     ORDER BY n DESC, t.tag ASC`
+  );
+  return rows.map((r) => ({ tag: r.tag, count: Number(r.n) }));
 }
 
 /**

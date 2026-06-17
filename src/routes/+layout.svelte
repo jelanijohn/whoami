@@ -46,7 +46,7 @@
         </button>
       </div>
     {:else}
-      <div class="mx-auto max-w-4xl p-4">
+      <div class="mx-auto max-w-6xl p-4">
         {@render children()}
       </div>
     {/if}

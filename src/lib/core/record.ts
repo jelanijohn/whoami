@@ -24,6 +24,7 @@ import {
   sourceIds as dbSourceIds,
   countsByType,
   allTags,
+  tagCounts as dbTagCounts,
   getMeta,
   type ListFilters,
   type ProjectSummary,
@@ -595,6 +596,11 @@ export class RecordStore {
 
   allTags(includePrivate = false): Promise<string[]> {
     return allTags(this.platform.db, includePrivate);
+  }
+
+  /** Tags with usage counts, most-used first — drives the Journal tag filter. */
+  tagCounts(includePrivate = false): Promise<{ tag: string; count: number }[]> {
+    return dbTagCounts(this.platform.db, includePrivate);
   }
 
   lastRebuild(): Promise<string | null> {

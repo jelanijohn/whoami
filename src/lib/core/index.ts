@@ -67,9 +67,12 @@ export {
   sourceIds,
   countsByType,
   allTags,
+  tagCounts,
   getMeta,
   SCHEMA_VERSION,
   type ListFilters,
+  type SortKey,
+  type SortDir,
   type ProjectSummary,
   type RebuildReport
 } from './index-db';

@@ -59,6 +59,8 @@ import {
   type RawItem,
   type RebuildReport,
   type ReduceProposal,
+  type SortDir,
+  type SortKey,
   type SyncResult
 } from './core';
 import { createTauriPlatform } from './platform-tauri';
@@ -68,6 +70,14 @@ import { homeDir, join, localDataDir } from '@tauri-apps/api/path';
 const LS_KEY = 'whoami:recordRoot';
 const LS_LLM = 'whoami:llm';
 const LS_IMPORT = 'whoami:import';
+/** Persisted Journal layout preferences (view/grouping/sort/private) so the
+ * user's preferred layout sticks between sessions (design handoff). */
+const LS_VIEW = 'whoami:journalView';
+
+/** The four switchable Journal views (design handoff). */
+export type JournalView = 'grouped' | 'timeline' | 'calendar' | 'table';
+/** How the Grouped view buckets entries. */
+export type JournalGroupBy = 'project' | 'type' | 'month';
 
 /** Live (API) ingest sources. LinkedIn is import-only (archive), handled apart. */
 export type LiveSource = 'github' | 'asana' | 'gmail';
@@ -186,11 +196,32 @@ class AppState {
   message = $state('');
   error = $state('');
 
-  // Timeline filters.
+  // Journal filters + sort (design handoff). These drive the index query in
+  // {@link refresh} — the views never re-filter in memory.
   search = $state('');
-  filterType = $state('');
+  /** Multi-select entry types; empty ⇒ all types. Replaces the old single
+   * `filterType`. */
+  selTypes = $state<string[]>([]);
   filterProject = $state('');
+  filterTag = $state('');
+  /** Inclusive date bounds (YYYY-MM-DD) or '' for open-ended. */
+  dateFrom = $state('');
+  dateTo = $state('');
   includePrivate = $state(false);
+  sortKey = $state<SortKey>('date');
+  sortDir = $state<SortDir>('desc');
+
+  // Journal layout (persisted, see {@link savePrefs}).
+  view = $state<JournalView>('grouped');
+  groupBy = $state<JournalGroupBy>('project');
+
+  /** Tags with usage counts (most-used first) for the tag filter. */
+  tags = $state<{ tag: string; count: number }[]>([]);
+  /** Entry count per type (honoring the privacy toggle) for the type chips. */
+  typeCounts = $state<Record<string, number>>({});
+  /** Total entries matching only the privacy toggle — the unfiltered baseline
+   * the header subtitle compares the filtered count against. */
+  total = $state(0);
 
   /** Non-reactive handle to the platform (its plugin objects aren't state). */
   private platform: Platform | null = null;
@@ -218,6 +249,25 @@ class AppState {
             gmail: { ...DEFAULT_IMPORT_SETTINGS.gmail, ...p.gmail },
             triage: { ...DEFAULT_IMPORT_SETTINGS.triage, ...p.triage }
           };
+        } catch {
+          /* ignore a corrupt setting */
+        }
+      }
+      const rawView = localStorage.getItem(LS_VIEW);
+      if (rawView) {
+        try {
+          const v = JSON.parse(rawView) as Partial<{
+            view: JournalView;
+            groupBy: JournalGroupBy;
+            sortKey: SortKey;
+            sortDir: SortDir;
+            includePrivate: boolean;
+          }>;
+          if (v.view) this.view = v.view;
+          if (v.groupBy) this.groupBy = v.groupBy;
+          if (v.sortKey) this.sortKey = v.sortKey;
+          if (v.sortDir) this.sortDir = v.sortDir;
+          if (typeof v.includePrivate === 'boolean') this.includePrivate = v.includePrivate;
         } catch {
           /* ignore a corrupt setting */
         }
@@ -263,18 +313,75 @@ class AppState {
     }
   }
 
-  /** Re-read the timeline, profile, projects, and git status from disk/index. */
+  /** Re-read the timeline, profile, projects, and git status from disk/index.
+   * All Journal filters/sort are pushed into the index query here — the views
+   * read the returned page and never re-filter in memory (design handoff). */
   async refresh(): Promise<void> {
     if (!this.store) return;
     this.entries = await this.store.listEntries({
       includePrivate: this.includePrivate,
       search: this.search.trim() || undefined,
-      type: this.filterType || undefined,
-      project: this.filterProject || undefined
+      types: this.selTypes.length ? this.selTypes : undefined,
+      project: this.filterProject || undefined,
+      tag: this.filterTag || undefined,
+      dateFrom: this.dateFrom || undefined,
+      dateTo: this.dateTo || undefined,
+      sort: { key: this.sortKey, dir: this.sortDir }
     });
     this.projects = await this.store.listProjects(this.includePrivate);
+    this.tags = await this.store.tagCounts(this.includePrivate);
+    this.typeCounts = await this.store.countsByType(this.includePrivate);
+    this.total = Object.values(this.typeCounts).reduce((a, b) => a + b, 0);
     this.profile = await this.store.readProfile();
     await this.refreshGit();
+  }
+
+  /** Toggle a type in/out of the multi-select set (empty ⇒ all types). */
+  toggleType(type: string): void {
+    this.selTypes = this.selTypes.includes(type)
+      ? this.selTypes.filter((t) => t !== type)
+      : [...this.selTypes, type];
+  }
+
+  /** True when any filter narrows the timeline (drives the Clear button +
+   * the header subtitle). Private being hidden counts as an active filter. */
+  get activeFilters(): boolean {
+    return !!(
+      this.search ||
+      this.selTypes.length ||
+      this.filterProject ||
+      this.filterTag ||
+      this.dateFrom ||
+      this.dateTo ||
+      !this.includePrivate
+    );
+  }
+
+  /** Reset every filter and re-enable private (design handoff). The caller is
+   * responsible for the follow-up {@link refresh}. */
+  clearFilters(): void {
+    this.search = '';
+    this.selTypes = [];
+    this.filterProject = '';
+    this.filterTag = '';
+    this.dateFrom = '';
+    this.dateTo = '';
+    this.includePrivate = true;
+  }
+
+  /** Persist the layout preferences (view/grouping/sort/private). */
+  savePrefs(): void {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem(
+      LS_VIEW,
+      JSON.stringify({
+        view: this.view,
+        groupBy: this.groupBy,
+        sortKey: this.sortKey,
+        sortDir: this.sortDir,
+        includePrivate: this.includePrivate
+      })
+    );
   }
 
   async refreshGit(): Promise<void> {

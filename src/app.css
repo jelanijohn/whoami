@@ -21,6 +21,99 @@
   color-scheme: light;
 }
 
+/* Journal Views design tokens (design handoff). The prototype is light-only;
+   each value gets a dark variant under :root.dark so the four views read on the
+   dark surface. Type/project colors drive small dots, pills (with color-mix
+   alpha backgrounds), and label text, so the dark variants are lightened for
+   legibility on the dark paper. Referenced via var() at the call sites and the
+   $lib/journal/theme.ts color maps. */
+:root {
+  /* Per-entry-type accent colors. */
+  --jv-type-journal: #6b7280;
+  --jv-type-role: #4f6ef7;
+  --jv-type-project: #8b5cf6;
+  --jv-type-win: #1f9e6f;
+  --jv-type-skill: #c07a00;
+  --jv-type-education: #0d9aa8;
+  --jv-type-milestone: #e0567a;
+  --jv-type-mention: #3b82f6;
+
+  /* Project section palette (assigned by project index) + unaffiliated gray. */
+  --jv-proj-0: #8b5cf6;
+  --jv-proj-1: #0d9aa8;
+  --jv-proj-2: #e0567a;
+  --jv-proj-3: #1f9e6f;
+  --jv-proj-4: #c07a00;
+  --jv-proj-5: #4f6ef7;
+  --jv-proj-none: #b8b8b3;
+
+  /* Hairlines, surfaces, and faint text. */
+  --jv-hair: #f0f0ec; /* row + section dividers */
+  --jv-hair-soft: #f6f6f2; /* grouped entry separator */
+  --jv-rail: #ecece6; /* timeline rail + dense cards */
+  --jv-faint: #b8b8b3; /* project labels, counts */
+  --jv-date: #9a9a96; /* row dates, secondary glyphs */
+  --jv-body: #52525b; /* expanded body text */
+  --jv-chevron: #c4c4be; /* expand chevrons */
+  --jv-chip-bg: #f4f4f0; /* tag chips, count badges */
+  --jv-heat-empty: #edefe9; /* zero-count heatmap cell */
+  --jv-row-detail: #fbfbf9; /* table/calendar detail surface */
+}
+
+:root.dark {
+  --jv-type-journal: #9aa1ad;
+  --jv-type-role: #7c93fb;
+  --jv-type-project: #a78bfa;
+  --jv-type-win: #34c794;
+  --jv-type-skill: #e0a43b;
+  --jv-type-education: #2bc0d0;
+  --jv-type-milestone: #f07a9a;
+  --jv-type-mention: #6aa6fb;
+
+  --jv-proj-0: #a78bfa;
+  --jv-proj-1: #2bc0d0;
+  --jv-proj-2: #f07a9a;
+  --jv-proj-3: #34c794;
+  --jv-proj-4: #e0a43b;
+  --jv-proj-5: #7c93fb;
+  --jv-proj-none: #6b6c72;
+
+  --jv-hair: #2a2b31;
+  --jv-hair-soft: #242529;
+  --jv-rail: #2f3037;
+  --jv-faint: #75767c;
+  --jv-date: #84858b;
+  --jv-body: #b9b9b4;
+  --jv-chevron: #5b5c63;
+  --jv-chip-bg: #26272c;
+  --jv-heat-empty: #232429;
+  --jv-row-detail: #1b1c21;
+}
+
+/* Expansion entrance from the prototype; chevron rotation lives inline.
+   Respect reduced-motion (the prototype did not; production should). */
+@keyframes wai-rise {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.jv-rise {
+  animation: wai-rise 0.18s ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  .jv-rise {
+    animation: none;
+  }
+  .jv-chevron {
+    transition: none !important;
+  }
+}
+
 /* Dark theme: redefine the semantic tokens so every `var(--color-*)` usage
    (borders, muted text, accent, paper, ink) flips for free. Hardcoded
    surface/status colors are handled with `dark:` variants at the call sites. */
