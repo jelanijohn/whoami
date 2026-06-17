@@ -63,6 +63,12 @@
     app.claudeCodeSelected = sel.includes(root) ? sel.filter((r) => r !== root) : [...sel, root];
   }
 
+  /** Toggle one Warp working directory in/out of the import selection. */
+  function toggleWarp(dir: string) {
+    const sel = app.warpSelected;
+    app.warpSelected = sel.includes(dir) ? sel.filter((d) => d !== dir) : [...sel, dir];
+  }
+
   const inputCls =
     'mt-0.5 rounded border border-[var(--color-line)] px-2 py-1.5 text-sm';
   const btnCls =
@@ -365,6 +371,61 @@
         onclick={() => app.importClaudeCode($state.snapshot(app.claudeCodeSelected))}
       >
         Import {app.claudeCodeSelected.length} project{app.claudeCodeSelected.length === 1 ? '' : 's'}
+      </button>
+    {/if}
+  </section>
+
+  <!-- Warp -->
+  <section class="space-y-2 border-t border-[var(--color-line)] pt-5">
+    <h2 class="text-sm font-semibold">Warp (AI history)</h2>
+    <p class="text-xs text-[var(--color-muted)]">
+      Zero-auth, import-only. Reads your local Warp Agent-mode history from
+      <code>warp.sqlite</code> and stages one candidate per conversation — your prompts are a
+      timestamped diary of what you were trying to do, pre-anchored to a project by its working
+      directory. One conversation = one candidate; only your typed prompts become the body (Warp
+      keeps the assistant's replies in the cloud, so they're never imported).
+    </p>
+    <p class="text-xs text-[var(--color-private)]">
+      Most sensitive source here, so it never touches the cloud: you pick which projects to import, a
+      local prefilter runs (no LLM triage), and every candidate is private by default until you
+      promote it. Warp's database is opened read-only.
+    </p>
+    <button class={btnCls} disabled={app.busy} onclick={() => app.loadWarpProjects()}>
+      {app.warpProjects.length ? 'Rescan projects' : 'Find projects'}
+    </button>
+    {#if app.warpProjects.length > 0}
+      <fieldset class="space-y-1 rounded border border-[var(--color-line)] p-3">
+        <legend class="flex items-center gap-3 px-1 text-xs text-[var(--color-muted)]">
+          <span>{app.warpSelected.length} of {app.warpProjects.length} selected</span>
+          <button class="text-[var(--color-accent)] hover:underline" onclick={() => (app.warpSelected = app.warpProjects.map((p) => p.dir))}>
+            all
+          </button>
+          <button class="text-[var(--color-muted)] hover:underline" onclick={() => (app.warpSelected = [])}>
+            none
+          </button>
+        </legend>
+        <div class="max-h-56 space-y-1 overflow-y-auto">
+          {#each app.warpProjects as p (p.dir)}
+            <label class="flex items-center gap-2 text-sm" title={p.dir}>
+              <input
+                type="checkbox"
+                checked={app.warpSelected.includes(p.dir)}
+                onchange={() => toggleWarp(p.dir)}
+              />
+              <span class="font-medium">{p.name}</span>
+              <span class="text-xs text-[var(--color-muted)]">
+                {p.conversations} conversation{p.conversations === 1 ? '' : 's'}
+              </span>
+            </label>
+          {/each}
+        </div>
+      </fieldset>
+      <button
+        class={runCls}
+        disabled={app.busy || app.warpSelected.length === 0}
+        onclick={() => app.importWarp($state.snapshot(app.warpSelected))}
+      >
+        Import {app.warpSelected.length} project{app.warpSelected.length === 1 ? '' : 's'}
       </button>
     {/if}
   </section>

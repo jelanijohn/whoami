@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capabilities for Who Am I: draw our own window chrome (drag, minimize, maximize, close), read/write the record under $HOME, run the derived SQLite index, shell out to git for Sync, and pick a folder.",
+  "description": "Capabilities for Who Am I: draw our own window chrome (drag, minimize, maximize, close), read/write the record under $HOME, run the derived SQLite index, read another app's local DB read-only for history import (e.g. Warp under a mounted Windows drive on WSL), shell out to git for Sync, and pick a folder.",
   "windows": ["main"],
   "permissions": [
     "core:default",
@@ -32,8 +32,8 @@
     { "identifier": "fs:allow-write-text-file", "allow": [{ "path": "$HOME/**" }] },
     { "identifier": "fs:allow-mkdir", "allow": [{ "path": "$HOME/**" }] },
     { "identifier": "fs:allow-remove", "allow": [{ "path": "$HOME/**" }] },
-    { "identifier": "fs:allow-read-dir", "allow": [{ "path": "$HOME/**" }] },
-    { "identifier": "fs:allow-exists", "allow": [{ "path": "$HOME/**" }] },
+    { "identifier": "fs:allow-read-dir", "allow": [{ "path": "$HOME/**" }, { "path": "/mnt/*/Users" }] },
+    { "identifier": "fs:allow-exists", "allow": [{ "path": "$HOME/**" }, { "path": "/mnt/*" }, { "path": "/mnt/*/Users" }, { "path": "/mnt/*/Users/**" }] },
 
     "http:default",
     {

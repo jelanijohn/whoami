@@ -130,6 +130,15 @@ class TauriDatabase implements CoreDatabase {
     return new TauriDatabase(await Database.load(`sqlite:${name}`));
   }
 
+  /** Open an external SQLite file by absolute path, **read-only**. `mode=ro` +
+   * `immutable=1` means we never write or lock the file — safe to point at
+   * another app's live DB (Warp's `warp.sqlite`, held open in WAL). Backslashes
+   * are normalized so Windows paths form a valid sqlx URI. */
+  static async openExternalReadOnly(path: string): Promise<TauriDatabase> {
+    const uri = path.replace(/\\/g, '/');
+    return new TauriDatabase(await Database.load(`sqlite:${uri}?mode=ro&immutable=1`));
+  }
+
   async execute(sql: string, params: unknown[] = []): Promise<void> {
     if (params.length === 0) {
       for (const stmt of splitStatements(sql)) {
@@ -145,7 +154,11 @@ class TauriDatabase implements CoreDatabase {
   }
 
   async close(): Promise<void> {
-    await this.db.close();
+    // Close ONLY this pool: plugin-sql's close() with no argument closes *every*
+    // pool (incl. the app's long-lived index DB), which then fails the next index
+    // query with "attempted to acquire a connection on a closed pool". Passing the
+    // connection string scopes the close to this database.
+    await this.db.close(this.db.path);
   }
 }
 
@@ -240,6 +253,7 @@ export async function createTauriPlatform(recordRoot: string): Promise<Platform>
     joinPath,
     http: tauriHttp,
     secrets: keyringSecrets,
-    docs: tauriDocs
+    docs: tauriDocs,
+    openDatabase: (path: string) => TauriDatabase.openExternalReadOnly(path)
   };
 }

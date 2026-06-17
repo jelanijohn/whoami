@@ -37,7 +37,7 @@ src/lib/core/        Framework-agnostic TypeScript core (no Tauri, no browser).
   record.ts            RecordStore facade — write-text-first CRUD.
   git.ts               Explicit Sync (pull --rebase / add / commit / push).
   ingest/              Provider adapters (GitHub, Asana, Gmail, LinkedIn,
-                         résumé, Claude Code) → candidates in the review inbox.
+                         résumé, Claude Code, Warp) → candidates in the inbox.
   triage/              Prefilter + optional LLM pass: a keep|frivolous sort
                          signal; never deletes or auto-rejects.
   reduce/              Optional LLM map/reduce: roll a noisy inbox into drafts.
@@ -55,8 +55,9 @@ src-tauri/           Rust shell: registers the fs/sql/shell/dialog/http plugins.
 
 The core never imports Tauri. The Tauri frontend and the test harness each
 supply a `Platform` (filesystem, SQLite, git runner, hash, plus optional HTTP +
-keyring seams for ingest and the LLM) — so the storage and ingest logic is fully
-unit-testable off-device, and a CLI could wrap the same core.
+keyring seams for ingest and the LLM, and a read-only external-SQLite seam used to
+read another app's database for Warp import) — so the storage and ingest logic is
+fully unit-testable off-device, and a CLI could wrap the same core.
 
 ### How a record folder is used
 
@@ -74,10 +75,10 @@ sources and help you shape it — but **nothing reaches the record without your
 explicit promote.**
 
 - **Ingest** (`src/lib/core/ingest/`) — adapters for GitHub, Asana, Gmail,
-  LinkedIn, an imported résumé, and your Claude Code history map provider data
-  into normalized items, landing them as *candidates in a review inbox* (never
-  the record). Mappers are pure and fixture-tested; the layer never touches the
-  record, secrets, or the index directly.
+  LinkedIn, an imported résumé, and your Claude Code and Warp AI history map
+  provider data into normalized items, landing them as *candidates in a review
+  inbox* (never the record). Mappers are pure and fixture-tested; the layer never
+  touches the record, secrets, or the index directly.
 - **Triage** (`src/lib/core/triage/`) — a deterministic prefilter that always
   runs, plus an optional LLM pass, annotates each candidate with a
   `keep | frivolous` sort signal. It only sorts: never deletes, hides, or

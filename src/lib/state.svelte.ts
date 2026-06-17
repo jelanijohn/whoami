@@ -26,6 +26,10 @@ import {
   claudeCodeRootAllowed,
   claudeCodeProjectName,
   CLAUDE_CODE_DEFAULT_PROJECTS,
+  importWarpConversations,
+  warpProjectName,
+  type WarpQueryRow,
+  type WarpConversationMeta,
   parseResume,
   stageItems,
   selectNewItems,
@@ -38,6 +42,7 @@ import {
   GMAIL_TOKEN_NAME,
   type AsanaFetchOpts,
   type AsanaProject,
+  type Database,
   type Entry,
   type GitStatus,
   type GmailFetchOpts,
@@ -58,7 +63,7 @@ import {
 } from './core';
 import { createTauriPlatform } from './platform-tauri';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
-import { homeDir, join } from '@tauri-apps/api/path';
+import { homeDir, join, localDataDir } from '@tauri-apps/api/path';
 
 const LS_KEY = 'whoami:recordRoot';
 const LS_LLM = 'whoami:llm';
@@ -161,6 +166,12 @@ class AppState {
   /** Root dir names the user has selected to import (subset of
    * {@link claudeCodeProjects}). Transient, like the discovered list. */
   claudeCodeSelected = $state<string[]>([]);
+  /** Warp projects discovered in `warp.sqlite` (empty until "Find projects").
+   * Each is a `working_directory` the Agent ran in, with a friendly name and its
+   * count of conversations. Transient — machine-specific, so not persisted. */
+  warpProjects = $state<{ dir: string; name: string; conversations: number }[]>([]);
+  /** Working dirs the user has selected to import (subset of {@link warpProjects}). */
+  warpSelected = $state<string[]>([]);
   /** Result of the most recent import run, surfaced after each fetch. */
   lastImportReport = $state<IngestReport | null>(null);
   /** Persisted LLM provider choice (plan §3), or null when none is configured. */
@@ -741,6 +752,159 @@ class AppState {
       const known = report.skippedPromoted + report.skippedRejected;
       this.message = `claude-code: staged ${report.staged}, ${known} already known${report.errors.length ? `, ${report.errors.length} errors` : ''}`;
       return report;
+    });
+  }
+
+  /**
+   * Resolve the local Warp SQLite path across platforms, or null when none of
+   * the known locations exist. Windows: `%LOCALAPPDATA%\warp\Warp\data`; macOS:
+   * the Warp-Stable app-support dir (sandboxed + non-sandboxed); Linux: the XDG
+   * state dir then the older share dir.
+   */
+  private async warpDbPath(): Promise<string | null> {
+    if (!this.platform) return null;
+    const fs = this.platform.fs;
+    const home = await homeDir();
+    // Path under a Windows %LOCALAPPDATA% (native Windows) or a mounted Windows
+    // drive (WSL): warp/Warp/data/warp.sqlite.
+    const winRel = ['warp', 'Warp', 'data', 'warp.sqlite'];
+    const candidates: string[] = [];
+    try {
+      candidates.push(await join(await localDataDir(), ...winRel));
+    } catch {
+      // localDataDir may be unavailable on some platforms — skip that candidate.
+    }
+    candidates.push(
+      await join(home, 'Library', 'Application Support', 'dev.warp.Warp-Stable', 'warp.sqlite'),
+      await join(home, 'Library', 'Group Containers', '2BBY89MBSN.dev.warp', 'Library', 'Application Support', 'dev.warp.Warp-Stable', 'warp.sqlite'),
+      await join(home, '.local', 'state', 'warp-terminal', 'warp.sqlite'),
+      await join(home, '.local', 'share', 'warp-terminal', 'warp.sqlite')
+    );
+    // WSL: the app runs on Linux but Warp lives on a mounted Windows drive at
+    // /mnt/<drive>/Users/<user>/AppData/Local/warp/Warp/data/warp.sqlite. Probe
+    // each drive's user dirs (Windows usernames differ from the Linux one).
+    for (const drive of ['c', 'd', 'e']) {
+      const users = `/mnt/${drive}/Users`;
+      if (!(await fs.exists(users))) continue;
+      for (const user of await fs.readDir(users)) {
+        candidates.push(await join(users, user, 'AppData', 'Local', ...winRel));
+      }
+    }
+    for (const p of candidates) {
+      if (await fs.exists(p)) return p;
+    }
+    return null;
+  }
+
+  /** Open Warp's `warp.sqlite` read-only, or throw a clear message when the
+   * platform can't open external DBs / no Warp DB is present. */
+  private async openWarpDb(): Promise<Database> {
+    if (!this.platform?.openDatabase) throw new Error('This platform cannot open external databases');
+    const path = await this.warpDbPath();
+    if (!path) throw new Error('No Warp database found — open Warp at least once, then retry');
+    return this.platform.openDatabase(path);
+  }
+
+  /** Map each Warp conversation to its primary (most-frequent) working_directory,
+   * the project we anchor its candidate to. One lightweight scan of `ai_queries`. */
+  private async warpConversationDirs(db: Database): Promise<Map<string, string>> {
+    const rows = await db.select<{ conversation_id: string; working_directory: string | null }>(
+      `SELECT conversation_id, working_directory FROM ai_queries`
+    );
+    const perConv = new Map<string, Map<string, number>>();
+    for (const r of rows) {
+      if (!r.conversation_id || !r.working_directory) continue;
+      let counts = perConv.get(r.conversation_id);
+      if (!counts) perConv.set(r.conversation_id, (counts = new Map()));
+      counts.set(r.working_directory, (counts.get(r.working_directory) ?? 0) + 1);
+    }
+    const primary = new Map<string, string>();
+    for (const [conv, counts] of perConv) {
+      let best = '';
+      let bestN = 0;
+      for (const [wd, n] of counts) if (n > bestN) ((best = wd), (bestN = n));
+      if (best) primary.set(conv, best);
+    }
+    return primary;
+  }
+
+  /**
+   * Enumerate the projects (working directories) in Warp's local `warp.sqlite`
+   * to populate the Warp import picker. Each entry is a directory the Agent ran
+   * in, with its conversation count. Every project is offered — the human chooses
+   * the scope (per-project opt-in, like the Claude Code flow). Read-only.
+   */
+  async loadWarpProjects(): Promise<void> {
+    await this.guard(async () => {
+      if (!this.platform) throw new Error('Open a record folder first');
+      const db = await this.openWarpDb();
+      try {
+        const primary = await this.warpConversationDirs(db);
+        const counts = new Map<string, number>();
+        for (const dir of primary.values()) counts.set(dir, (counts.get(dir) ?? 0) + 1);
+        const found = [...counts.entries()]
+          .map(([dir, conversations]) => ({ dir, name: warpProjectName(dir), conversations }))
+          .sort((a, b) => a.name.localeCompare(b.name));
+        this.warpProjects = found;
+        this.warpSelected = [];
+        if (found.length === 0) throw new Error('No Warp Agent conversations found in warp.sqlite');
+        this.message = `Found ${found.length} Warp project${found.length === 1 ? '' : 's'}`;
+      } finally {
+        await db.close();
+      }
+    });
+  }
+
+  /**
+   * Warp Agent-mode history import (warp-adapter spec): zero-auth, import-only.
+   * Given the working `dirs` the human selected in the picker (fed by
+   * {@link loadWarpProjects}), reads the `ai_queries` rows for conversations
+   * anchored to those dirs (plus the optional `agent_conversations` enrichment)
+   * and hands them to the pure core mapper. One conversation = one candidate.
+   *
+   * Like Claude Code, chat history is the most sensitive source (spec §7), so
+   * this runs **prefilter-only** — conversation content never reaches a cloud
+   * triage model — and every candidate stays private by default. Read-only: the
+   * Warp DB is opened with `mode=ro&immutable=1`, never written or locked.
+   */
+  async importWarp(dirs: string[]): Promise<IngestReport | null> {
+    return this.guard(async () => {
+      if (!this.store || !this.platform) throw new Error('Open a record folder first');
+      if (dirs.length === 0) throw new Error('Select at least one Warp project to import');
+      const db = await this.openWarpDb();
+      try {
+        const primary = await this.warpConversationDirs(db);
+        const wanted = new Set(dirs);
+        const convIds = [...primary.entries()].filter(([, dir]) => wanted.has(dir)).map(([id]) => id);
+        if (convIds.length === 0) throw new Error('No Warp conversations in the selected projects');
+        const ph = convIds.map(() => '?').join(',');
+        const rows = (await db.select(
+          `SELECT conversation_id, start_ts, input, working_directory, output_status,
+                  model_id, planning_model_id, coding_model_id
+             FROM ai_queries WHERE conversation_id IN (${ph})`,
+          convIds
+        )) as unknown as WarpQueryRow[];
+        const metaRows = (await db.select(
+          `SELECT conversation_id, conversation_data, last_modified_at
+             FROM agent_conversations WHERE conversation_id IN (${ph})`,
+          convIds
+        )) as unknown as WarpConversationMeta[];
+        const metas: Record<string, WarpConversationMeta> = {};
+        for (const m of metaRows) metas[m.conversation_id] = m;
+
+        const items = importWarpConversations(rows, metas);
+        if (items.length === 0) throw new Error('No Warp conversations with a genuine prompt found in scope');
+        const fresh = await selectNewItems(this.store, items);
+        const signals = await this.triageFresh(fresh, false);
+        const report = await stageItems(this.store, items, { signals, project: this.importProject });
+        this.lastImportReport = report;
+        await this.loadCandidates();
+        const known = report.skippedPromoted + report.skippedRejected;
+        this.message = `warp: staged ${report.staged}, ${known} already known${report.errors.length ? `, ${report.errors.length} errors` : ''}`;
+        return report;
+      } finally {
+        await db.close();
+      }
     });
   }
 

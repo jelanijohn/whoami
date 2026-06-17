@@ -237,4 +237,9 @@ export interface Platform {
   /** Optional — present when binary document parsing is wired (résumé import
    * spec §3). Absent ⇒ résumé import is disabled with a clear message. */
   docs?: DocExtract;
+  /** Optional — open an external SQLite file (an absolute path) **read-only**,
+   * for importing another app's local database (Warp history import). The caller
+   * is responsible for `close()`. Absent ⇒ that import is disabled with a clear
+   * message. Distinct from {@link db}, which is the app's own writable index. */
+  openDatabase?(path: string): Promise<Database>;
 }

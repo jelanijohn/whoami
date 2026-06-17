@@ -106,10 +106,12 @@ class EnvSecrets implements Secrets {
 /** better-sqlite3 wrapped to satisfy the async {@link Database} interface. */
 class NodeDatabase implements Database {
   private db: BetterSqlite3.Database;
-  constructor(path: string) {
-    this.db = new BetterSqlite3(path);
-    this.db.pragma('journal_mode = WAL');
-    this.db.pragma('foreign_keys = ON');
+  constructor(path: string, opts: { readonly?: boolean } = {}) {
+    this.db = new BetterSqlite3(path, opts.readonly ? { readonly: true } : undefined);
+    if (!opts.readonly) {
+      this.db.pragma('journal_mode = WAL');
+      this.db.pragma('foreign_keys = ON');
+    }
   }
   async execute(sql: string, params: unknown[] = []): Promise<void> {
     if (params.length === 0) {
@@ -170,6 +172,9 @@ export function createNodePlatform(dbPath: string): Platform {
     joinPath: (...segments: string[]) => join(...segments),
     http: nodeHttp,
     secrets: new EnvSecrets(),
-    docs: nodeDocs
+    docs: nodeDocs,
+    async openDatabase(path: string) {
+      return new NodeDatabase(path, { readonly: true });
+    }
   };
 }

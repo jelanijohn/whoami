@@ -75,4 +75,13 @@ export {
   claudeCodeProjectName,
   CLAUDE_CODE_DEFAULT_PROJECTS
 } from './claude-code';
+export {
+  parseWarpQueryInput,
+  mapWarpConversation,
+  importWarpConversations,
+  warpProjectName,
+  type WarpQueryRow,
+  type WarpConversationMeta,
+  type WarpTurn
+} from './warp';
 export { rawItemToEntryInput, stageItems, selectNewItems } from './pipeline';
