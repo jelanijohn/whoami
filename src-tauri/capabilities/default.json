@@ -19,6 +19,7 @@
       "identifier": "shell:allow-execute",
       "allow": [{ "name": "git", "cmd": "git", "args": true }]
     },
+    "shell:allow-open",
 
     "sql:default",
     "sql:allow-load",

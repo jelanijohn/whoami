@@ -36,6 +36,7 @@ src/lib/core/        Framework-agnostic TypeScript core (no Tauri, no browser).
   index-db.ts          The derived SQLite index: incremental + full rebuild.
   record.ts            RecordStore facade — write-text-first CRUD.
   git.ts               Explicit Sync (pull --rebase / add / commit / push).
+  feeds.ts             Saved, re-runnable import configs (machine-local) + refresh.
   ingest/              Provider adapters (GitHub, Asana, Gmail, LinkedIn,
                          résumé, Claude Code, Warp) → candidates in the inbox.
   triage/              Prefilter + optional LLM pass: a keep|frivolous sort
@@ -49,8 +50,9 @@ src/lib/state.svelte.ts    Svelte 5 runes app state driving the UI.
 src/lib/{appearance,theme}.svelte.ts  Appearance + theme (dark mode) preferences.
 src/lib/journal/      Pure helpers for the Journal views: grouping, date
                         formatting, and the type/project color palette.
-src/lib/components/   Titlebar, AppMenu, entry/candidate cards, editor, and the
-                        Journal views (Grouped · Timeline · Calendar · Table).
+src/lib/components/   Titlebar, AppMenu, entry/candidate cards, editor, the
+                        credential-setup help popups, and the Journal views
+                        (Grouped · Timeline · Calendar · Table).
 src/routes/          SvelteKit SPA: Journal · Import · Inbox · Projects ·
                        Profile · Resume · Personal site · Data.
 src-tauri/           Rust shell: registers the fs/sql/shell/dialog/http plugins.
@@ -86,6 +88,11 @@ explicit promote.**
   runs, plus an optional LLM pass, annotates each candidate with a
   `keep | frivolous` sort signal. It only sorts: never deletes, hides, or
   auto-rejects, and the signal is stripped on promote.
+- **Feeds** (`src/lib/core/feeds.ts`) — save a configured source (GitHub, Asana,
+  Gmail, Claude Code, or Warp) as a re-runnable *feed*, then **Refresh all** to
+  re-pull every one in a click. Feeds are machine-local (localStorage, never the
+  record — tokens stay in the keyring), and re-running only stages what's new.
+  Inbox-only like every import; nothing is auto-promoted.
 - **Reduce** (`src/lib/core/reduce/`) — an optional LLM map/reduce that rolls a
   noisy inbox up into clean entry drafts for you to review.
 - **LLM seam** (`src/lib/core/llm/`) — AI passes run through a provider

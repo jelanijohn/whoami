@@ -18,7 +18,7 @@
 <!-- Transparent margin: the native window is borderless + transparent, so this
      padding is just desktop showing through around the rounded panel below and
      gives the panel's soft shadow room to fall. -->
-<div class="h-screen overflow-hidden p-3.5">
+<div class="h-screen overflow-hidden p-[3px]">
   <!-- App panel: the rounded, bordered window shape the whole app lives in.
        overflow-hidden clips inner content (header, scroll areas) to the corners. -->
   <div

@@ -10,9 +10,9 @@
       mark : #FFFFFF   (white W, for contrast at small sizes)
 
     This is the canonical, editable source. Regenerate the binary icon set
-    from it — see docs/ or the icon regen recipe. Note: the in-app header
-    mark (src/lib/components/BrandMark.svelte) is intentionally a different
-    glyph (a fingerprint) and is NOT driven by this file.
+    from it — see docs/ or the icon regen recipe. The in-app header mark
+    (src/lib/components/BrandMark.svelte) draws this SAME W glyph inline so
+    the header matches the icon; keep the two paths in sync if you edit it.
   -->
   <rect x="0" y="0" width="512" height="512" rx="100" fill="#3B5BDB"/>
   <g transform="translate(256 256) scale(0.78) translate(-256 -257)">

@@ -37,6 +37,14 @@ import {
   llmTriageItems,
   DEFAULT_RUBRIC,
   type TriageRubric,
+  buildFeed,
+  withFeedDefaults,
+  effectiveLiveParams,
+  aggregateRefreshReport,
+  type Feed,
+  type FeedKind,
+  type FeedRunResult,
+  type RefreshReport,
   GITHUB_TOKEN_NAME,
   ASANA_TOKEN_NAME,
   GMAIL_TOKEN_NAME,
@@ -70,6 +78,10 @@ import { homeDir, join, localDataDir } from '@tauri-apps/api/path';
 const LS_KEY = 'whoami:recordRoot';
 const LS_LLM = 'whoami:llm';
 const LS_IMPORT = 'whoami:import';
+/** Saved import feeds — machine-local, never the record repo (spec §0.4). */
+const LS_FEEDS = 'whoami:feeds';
+
+export type { Feed, FeedKind, FeedRunResult, RefreshReport } from './core';
 /** Persisted Journal layout preferences (view/grouping/sort/private) so the
  * user's preferred layout sticks between sessions (design handoff). */
 const LS_VIEW = 'whoami:journalView';
@@ -184,6 +196,11 @@ class AppState {
   warpSelected = $state<string[]>([]);
   /** Result of the most recent import run, surfaced after each fetch. */
   lastImportReport = $state<IngestReport | null>(null);
+  /** Saved, re-runnable import feeds (import-feed-spec). Persisted to
+   * `localStorage` (LS_FEEDS), never the record repo. */
+  feeds = $state<Feed[]>([]);
+  /** Result of the most recent Refresh-all run, surfaced in the Import page. */
+  lastRefreshReport = $state<RefreshReport | null>(null);
   /** Persisted LLM provider choice (plan §3), or null when none is configured. */
   llmConfig = $state<LlmConfig | null>(null);
   /** True when an {@link Llm} is actually built and ready to call. */
@@ -253,6 +270,24 @@ class AppState {
           /* ignore a corrupt setting */
         }
       }
+      const rawFeeds = localStorage.getItem(LS_FEEDS);
+      if (rawFeeds) {
+        try {
+          const arr = JSON.parse(rawFeeds);
+          if (Array.isArray(arr)) {
+            // Normalize each persisted feed forward-compatibly (spec §4.1.1); an
+            // id should always be present, but mint one if a hand-edited payload
+            // dropped it so CRUD-by-id stays sound.
+            this.feeds = arr.map((f) => {
+              const feed = withFeedDefaults(f as Partial<Feed>);
+              if (!feed.id) feed.id = crypto.randomUUID();
+              return feed;
+            });
+          }
+        } catch {
+          /* ignore a corrupt setting */
+        }
+      }
       const rawView = localStorage.getItem(LS_VIEW);
       if (rawView) {
         try {
@@ -306,6 +341,12 @@ class AppState {
       await this.refreshTokenPresence();
       await this.refresh();
       this.message = `Opened ${path}`;
+      // Phase 3 (spec §7.2): opportunistically run any feed the user opted into
+      // on-open, without blocking the UI. Inbox-only, like every feed run; the
+      // busy flag + toast already communicate progress. Defaults off per feed.
+      if (this.feeds.some((f) => f.enabled && f.runOnOpen)) {
+        void this.refreshAll({ onOpenOnly: true });
+      }
     } catch (e) {
       this.error = `Could not open folder: ${String(e)}`;
     } finally {
@@ -788,7 +829,7 @@ class AppState {
   private runStage(
     source: LiveSource,
     fetcher: (http: Http, token: string) => Promise<RawItem[]>,
-    opts: { useLlmTriage: boolean; private?: boolean }
+    opts: { useLlmTriage: boolean; private?: boolean; project?: string }
   ): Promise<IngestReport | null> {
     return this.guard(async () => {
       if (!this.store) throw new Error('Open a record folder first');
@@ -806,7 +847,7 @@ class AppState {
       const report = await stageItems(this.store, items, {
         signals,
         private: opts.private,
-        project: this.importProject
+        project: opts.project ?? this.importProject
       });
       this.lastImportReport = report;
       await this.loadCandidates();
@@ -816,20 +857,38 @@ class AppState {
     });
   }
 
-  importGithub(params: Omit<GithubFetchOpts, 'token'>): Promise<IngestReport | null> {
+  /** A per-run override for a single import, supplied by {@link runFeed} so a
+   * feed can pin its own project/private/useLlm instead of reading the globals.
+   * Absent fields fall back to today's defaults — the `/import` form calls these
+   * with one arg and behaves exactly as before. */
+  importGithub(
+    params: Omit<GithubFetchOpts, 'token'>,
+    over?: { useLlmTriage?: boolean; private?: boolean; project?: string }
+  ): Promise<IngestReport | null> {
     return this.runStage('github', (http, token) => fetchGithub(http, { ...params, token }), {
-      useLlmTriage: this.importSettings.triage.useLlm,
-      private: this.importSettings.github.importPrivate
+      useLlmTriage: over?.useLlmTriage ?? this.importSettings.triage.useLlm,
+      private: over?.private ?? this.importSettings.github.importPrivate,
+      project: over?.project
     });
   }
-  importAsana(params: Omit<AsanaFetchOpts, 'token'>): Promise<IngestReport | null> {
+  importAsana(
+    params: Omit<AsanaFetchOpts, 'token'>,
+    over?: { useLlmTriage?: boolean; private?: boolean; project?: string }
+  ): Promise<IngestReport | null> {
     return this.runStage('asana', (http, token) => fetchAsana(http, { ...params, token }), {
-      useLlmTriage: this.importSettings.triage.useLlm
+      useLlmTriage: over?.useLlmTriage ?? this.importSettings.triage.useLlm,
+      private: over?.private,
+      project: over?.project
     });
   }
-  importGmail(params: Omit<GmailFetchOpts, 'token'>): Promise<IngestReport | null> {
+  importGmail(
+    params: Omit<GmailFetchOpts, 'token'>,
+    over?: { useLlmTriage?: boolean; private?: boolean; project?: string }
+  ): Promise<IngestReport | null> {
     return this.runStage('gmail', (http, token) => fetchGmail(http, { ...params, token }), {
-      useLlmTriage: this.importSettings.triage.useLlm
+      useLlmTriage: over?.useLlmTriage ?? this.importSettings.triage.useLlm,
+      private: over?.private,
+      project: over?.project
     });
   }
 
@@ -881,7 +940,7 @@ class AppState {
    * runs **prefilter-only** like LinkedIn/résumé — session content is never sent
    * to a cloud triage model — and every candidate stays private by default.
    */
-  async importClaudeCode(roots: string[]): Promise<IngestReport | null> {
+  async importClaudeCode(roots: string[], project?: string): Promise<IngestReport | null> {
     return this.guard(async () => {
       if (!this.store || !this.platform) throw new Error('Open a record folder first');
       if (roots.length === 0) throw new Error('Select at least one Claude Code project to import');
@@ -904,7 +963,10 @@ class AppState {
       }
       const fresh = await selectNewItems(this.store, items);
       const signals = await this.triageFresh(fresh, false);
-      const report = await stageItems(this.store, items, { signals, project: this.importProject });
+      const report = await stageItems(this.store, items, {
+        signals,
+        project: project ?? this.importProject
+      });
       this.lastImportReport = report;
       await this.loadCandidates();
       const known = report.skippedPromoted + report.skippedRejected;
@@ -1025,7 +1087,7 @@ class AppState {
    * triage model — and every candidate stays private by default. Read-only: the
    * Warp DB is opened with `mode=ro&immutable=1`, never written or locked.
    */
-  async importWarp(dirs: string[]): Promise<IngestReport | null> {
+  async importWarp(dirs: string[], project?: string): Promise<IngestReport | null> {
     return this.guard(async () => {
       if (!this.store || !this.platform) throw new Error('Open a record folder first');
       if (dirs.length === 0) throw new Error('Select at least one Warp project to import');
@@ -1054,7 +1116,10 @@ class AppState {
         if (items.length === 0) throw new Error('No Warp conversations with a genuine prompt found in scope');
         const fresh = await selectNewItems(this.store, items);
         const signals = await this.triageFresh(fresh, false);
-        const report = await stageItems(this.store, items, { signals, project: this.importProject });
+        const report = await stageItems(this.store, items, {
+          signals,
+          project: project ?? this.importProject
+        });
         this.lastImportReport = report;
         await this.loadCandidates();
         const known = report.skippedPromoted + report.skippedRejected;
@@ -1107,6 +1172,156 @@ class AppState {
       this.message = `résumé: parsed ${items.length}, staged ${report.staged}, ${known} already known${errors.length ? `, ${errors.length} skipped` : ''}`;
       return report;
     });
+  }
+
+  // --- Import feeds (import-feed-spec) ---------------------------------------
+
+  /** Persist the feed list (outside the record repo). Quiet — the CRUD callers
+   * own any toast (mirrors {@link saveImportSettings}). */
+  saveFeeds(): void {
+    if (typeof localStorage !== 'undefined') localStorage.setItem(LS_FEEDS, JSON.stringify(this.feeds));
+  }
+
+  addFeed(feed: Feed): void {
+    this.feeds = [...this.feeds, feed];
+    this.saveFeeds();
+  }
+
+  updateFeed(id: string, patch: Partial<Feed>): void {
+    this.feeds = this.feeds.map((f) => (f.id === id ? { ...f, ...patch } : f));
+    this.saveFeeds();
+  }
+
+  removeFeed(id: string): void {
+    this.feeds = this.feeds.filter((f) => f.id !== id);
+    this.saveFeeds();
+  }
+
+  /** Snapshot the current import-form state for `kind` into a new {@link Feed}
+   * (spec §4.2.4), add it, and return it. The pure shaping (per-kind param shape
+   * + forced picker flags) lives in {@link buildFeed}. */
+  saveCurrentAsFeed(kind: FeedKind, label: string): Feed {
+    const live = kind === 'github' || kind === 'asana' || kind === 'gmail';
+    const feed = buildFeed({
+      id: crypto.randomUUID(),
+      label,
+      kind,
+      project: this.importProject,
+      liveParams: live
+        ? ($state.snapshot(this.importSettings[kind]) as Record<string, unknown>)
+        : undefined,
+      roots: kind === 'claude-code' ? $state.snapshot(this.claudeCodeSelected) : undefined,
+      dirs: kind === 'warp' ? $state.snapshot(this.warpSelected) : undefined,
+      importPrivate: this.importSettings.github.importPrivate,
+      useLlm: this.importSettings.triage.useLlm
+    });
+    this.addFeed(feed);
+    return feed;
+  }
+
+  /**
+   * Run a single feed (spec §4.3.4): dispatch by kind through the matching import
+   * method with the feed's per-run overrides, applying the rolling-window `since`
+   * derivation first. Reuses each method's existing guard/toast/reload — a
+   * single-feed run behaves exactly like clicking that source's button today,
+   * just with the feed's project/private/useLlm. On success, stamps `lastRunAt`
+   * (it drives the next run only for rolling github/asana; display-only
+   * otherwise). Returns the report, or null on error/empty.
+   */
+  async runFeed(feed: Feed): Promise<IngestReport | null> {
+    let report: IngestReport | null = null;
+    if (feed.kind === 'claude-code') {
+      const roots = Array.isArray(feed.params.roots) ? (feed.params.roots as string[]) : [];
+      report = await this.importClaudeCode(roots, feed.project);
+    } else if (feed.kind === 'warp') {
+      const dirs = Array.isArray(feed.params.dirs) ? (feed.params.dirs as string[]) : [];
+      report = await this.importWarp(dirs, feed.project);
+    } else {
+      const params = effectiveLiveParams(feed);
+      const over = { useLlmTriage: feed.useLlm, private: feed.private, project: feed.project };
+      if (feed.kind === 'github') report = await this.importGithub(this.toGithubParams(params), over);
+      else if (feed.kind === 'asana') report = await this.importAsana(this.toAsanaParams(params), over);
+      else if (feed.kind === 'gmail') report = await this.importGmail(this.toGmailParams(params), over);
+    }
+    if (report) this.updateFeed(feed.id, { lastRunAt: new Date().toISOString() });
+    return report;
+  }
+
+  /** Convert a stored github param snapshot to fetch opts (mirrors the form's
+   * `runGithub`). The `since` here may already be the rolling-window override. */
+  private toGithubParams(p: Record<string, unknown>): Omit<GithubFetchOpts, 'token'> {
+    const capStr = String(p.discussionCharCap ?? '').trim();
+    const cap = capStr ? Number(capStr) : undefined;
+    return {
+      user: String(p.user ?? '').trim(),
+      repo: String(p.repo ?? '').trim() || undefined,
+      since: (p.since as string) || undefined,
+      until: (p.until as string) || undefined,
+      limit: (p.limit as number) || undefined,
+      baseUrl: String(p.baseUrl ?? '').trim() || undefined,
+      fetchDiscussion: !!p.fetchDiscussion,
+      commentScope: (p.commentScope as 'self' | 'all') ?? 'self',
+      discussionCharCap: cap && Number.isFinite(cap) && cap > 0 ? cap : undefined
+    };
+  }
+
+  private toAsanaParams(p: Record<string, unknown>): Omit<AsanaFetchOpts, 'token'> {
+    return {
+      workspace: String(p.workspace ?? '').trim() || undefined,
+      project: String(p.project ?? '').trim() || undefined,
+      since: (p.since as string) || undefined,
+      until: (p.until as string) || undefined,
+      includeCompleted: (p.includeCompleted as boolean) ?? true,
+      limit: (p.limit as number) || undefined
+    };
+  }
+
+  private toGmailParams(p: Record<string, unknown>): Omit<GmailFetchOpts, 'token'> {
+    return { query: String(p.query ?? '').trim(), limit: (p.limit as number) || undefined };
+  }
+
+  /**
+   * Refresh every enabled feed (spec §4.4.3): run them **sequentially** (no
+   * provider hammering), tolerating per-feed errors so one failure never aborts
+   * the rest. Each {@link runFeed} reloads the inbox itself (acceptable for v1,
+   * spec §4.4.3(b)). Aggregates a {@link RefreshReport} and sets a summary toast.
+   */
+  async refreshAll(opts: { onOpenOnly?: boolean } = {}): Promise<RefreshReport | null> {
+    const enabled = this.feeds.filter((f) => f.enabled && (!opts.onOpenOnly || f.runOnOpen));
+    if (enabled.length === 0) {
+      // On-open is opportunistic — stay quiet when nothing opted in (spec §7).
+      if (!opts.onOpenOnly) this.message = 'No enabled feeds to refresh — save one first';
+      return null;
+    }
+    const startedAt = new Date().toISOString();
+    const results: FeedRunResult[] = [];
+    this.busy = true;
+    try {
+      for (const feed of enabled) {
+        const base = { id: feed.id, label: feed.label, kind: feed.kind };
+        try {
+          const report = await this.runFeed(feed);
+          if (report) results.push({ ...base, report });
+          else results.push({ ...base, report: null, error: this.error || 'run failed' });
+        } catch (e) {
+          results.push({ ...base, report: null, error: String(e) });
+        }
+      }
+    } finally {
+      this.busy = false;
+    }
+    const refresh = aggregateRefreshReport(startedAt, results);
+    this.lastRefreshReport = refresh;
+    const known = results.reduce(
+      (n, r) => n + (r.report ? r.report.skippedPromoted + r.report.skippedRejected : 0),
+      0
+    );
+    const errs = results.filter((r) => !r.report).length;
+    this.message =
+      `Refreshed ${enabled.length} feed${enabled.length === 1 ? '' : 's'}: ` +
+      `staged ${refresh.totalStaged}, ${known} already known` +
+      (errs ? `, ${errs} failed` : '');
+    return refresh;
   }
 
   // --- LLM provider (plan §3) -----------------------------------------------

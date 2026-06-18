@@ -107,7 +107,7 @@
       <span class="mac-inset" data-tauri-drag-region></span>
     {/if}
 
-    <span class="brandchip"><BrandMark size={15} /></span>
+    <span class="brandchip"><BrandMark size={22} /></span>
     <span class="wordmark" data-tauri-drag-region>Who Am I</span>
 
     {#if app.recordRoot}
@@ -252,9 +252,6 @@
     width: 26px;
     height: 26px;
     flex-shrink: 0;
-    border-radius: 8px;
-    background: var(--color-paper);
-    border: 1px solid var(--color-line);
   }
   .wordmark {
     margin-left: 9px;

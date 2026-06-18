@@ -1,5 +1,6 @@
 <script lang="ts">
   import { app } from '$lib/state.svelte';
+  import CredentialHelp from '$lib/components/CredentialHelp.svelte';
   import {
     DEFAULT_OLLAMA_URL,
     DEFAULT_OLLAMA_MODEL,
@@ -143,6 +144,7 @@
             class="mt-0.5 w-64 rounded border border-[var(--color-line)] px-2 py-1.5 text-sm"
           />
         </label>
+        <CredentialHelp topic="anthropic" />
         <button
           class="rounded border border-[var(--color-line)] px-3 py-1.5 text-sm hover:bg-gray-50 dark:hover:bg-white/5"
           disabled={app.busy || !anthropicKey.trim()}

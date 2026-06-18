@@ -93,6 +93,18 @@ export { generateResumeMarkdown, type ResumeInput, type ResumeOptions } from './
 export { generateSiteHtml, type SiteInput } from './generators/site';
 
 export * from './ingest';
+export {
+  isPickerKind,
+  withFeedDefaults,
+  buildFeed,
+  effectiveLiveParams,
+  aggregateRefreshReport,
+  type Feed,
+  type FeedKind,
+  type FeedFormInput,
+  type FeedRunResult,
+  type RefreshReport
+} from './feeds';
 export * from './llm';
 export * from './reduce';
 export * from './triage';

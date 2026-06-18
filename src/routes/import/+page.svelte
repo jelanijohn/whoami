@@ -1,9 +1,46 @@
 <script lang="ts">
-  import { app, type LiveSource } from '$lib/state.svelte';
+  import { app, type LiveSource, type Feed, type FeedKind } from '$lib/state.svelte';
+  import { isPickerKind } from '$lib/core';
   import { closeDatePicker } from '$lib/actions/closeDatePicker';
+  import CredentialHelp from '$lib/components/CredentialHelp.svelte';
 
   // Transient token-entry boxes (the saved value lives in the keyring, never here).
   let tokens = $state<Record<LiveSource, string>>({ github: '', asana: '', gmail: '' });
+
+  // Per-source "Save as feed" label drafts (inline text inputs, spec §6.1).
+  let feedLabels = $state<Record<string, string>>({});
+  // The feed currently being edited inline in the list (spec §6.2), or null.
+  let editingId = $state<string | null>(null);
+
+  /** Snapshot the current form state for `kind` into a new feed (spec §6.1). */
+  function saveAsFeed(kind: FeedKind) {
+    const label = (feedLabels[kind] ?? '').trim();
+    if (!label) return;
+    app.saveCurrentAsFeed(kind, label);
+    feedLabels[kind] = '';
+    app.message = `Saved feed “${label}”`;
+  }
+
+  /** Count of enabled feeds (drives the Refresh-all button label/disabled). */
+  const enabledCount = $derived(app.feeds.filter((f) => f.enabled).length);
+
+  /** A short relative-ish label for a feed's last run, or 'never'. */
+  function lastRun(iso?: string): string {
+    if (!iso) return 'never';
+    const d = new Date(iso);
+    const days = Math.floor((Date.now() - d.getTime()) / 86_400_000);
+    if (days <= 0) return 'today';
+    if (days === 1) return 'yesterday';
+    if (days < 30) return `${days}d ago`;
+    return d.toISOString().slice(0, 10);
+  }
+
+  async function deleteFeed(feed: Feed) {
+    if (confirm(`Delete feed “${feed.label}”?`)) {
+      if (editingId === feed.id) editingId = null;
+      app.removeFeed(feed.id);
+    }
+  }
 
   // Refresh which sources have a saved token whenever a record is open.
   $effect(() => {
@@ -88,6 +125,7 @@
         class="{inputCls} w-72"
       />
     </label>
+    <CredentialHelp topic={source} />
     <button class={btnCls} disabled={app.busy || !tokens[source].trim()} onclick={() => saveToken(source)}>
       Save token
     </button>
@@ -105,6 +143,20 @@
   </div>
 {/snippet}
 
+{#snippet saveAsFeedRow(kind: FeedKind)}
+  <div class="flex flex-wrap items-center gap-2 border-t border-dashed border-[var(--color-line)] pt-2">
+    <input
+      bind:value={feedLabels[kind]}
+      placeholder="Save these settings as a feed…"
+      class="{inputCls} w-60"
+      onkeydown={(e) => { if (e.key === 'Enter') saveAsFeed(kind); }}
+    />
+    <button class={btnCls} disabled={!feedLabels[kind]?.trim()} onclick={() => saveAsFeed(kind)}>
+      Save as feed
+    </button>
+  </div>
+{/snippet}
+
 <div class="max-w-2xl space-y-8">
   <section>
     <h1 class="text-lg font-semibold">Import</h1>
@@ -115,6 +167,173 @@
       promoted or rejected. Tokens are stored in the OS keyring, never in the record.
     </p>
   </section>
+
+  <!-- Saved feeds + Refresh all -->
+  <section class="space-y-3 rounded-lg border border-[var(--color-line)] bg-gray-50 p-4 dark:bg-white/5">
+    <div class="flex items-center justify-between gap-3">
+      <div>
+        <h2 class="text-sm font-semibold">Feeds</h2>
+        <p class="text-xs text-[var(--color-muted)]">
+          Saved import configurations you can re-run. Machine-local (never synced into your record),
+          and tokens stay in the keyring. Re-running only stages what's new.
+        </p>
+      </div>
+      <button
+        class={runCls}
+        disabled={app.busy || enabledCount === 0}
+        onclick={() => app.refreshAll()}
+      >
+        Refresh all ({enabledCount} enabled)
+      </button>
+    </div>
+
+    {#if app.feeds.length === 0}
+      <p class="text-xs text-[var(--color-muted)]">
+        No feeds yet — configure a source below and use “Save as feed”.
+      </p>
+    {:else}
+      <ul class="space-y-1.5">
+        {#each app.feeds as feed (feed.id)}
+          <li class="rounded border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-2 text-sm">
+            <div class="flex flex-wrap items-center gap-2">
+              <input
+                type="checkbox"
+                checked={feed.enabled}
+                title={feed.enabled ? 'Enabled — included in Refresh all' : 'Disabled — skipped by Refresh all'}
+                onchange={() => app.updateFeed(feed.id, { enabled: !feed.enabled })}
+              />
+              <span class="font-medium {feed.enabled ? '' : 'opacity-50'}">{feed.label}</span>
+              <span class="rounded bg-[var(--color-line)] px-1.5 py-0.5 text-xs text-[var(--color-muted)]">
+                {feed.kind}
+              </span>
+              {#if feed.kind === 'github' || feed.kind === 'asana'}
+                <span class="text-xs text-[var(--color-muted)]">{feed.window}</span>
+              {/if}
+              <span class="text-xs text-[var(--color-muted)]">last run {lastRun(feed.lastRunAt)}</span>
+              <span class="ml-auto flex items-center gap-2">
+                <button class={btnCls} disabled={app.busy} onclick={() => app.runFeed(feed)}>Run</button>
+                <button class={btnCls} onclick={() => (editingId = editingId === feed.id ? null : feed.id)}>
+                  {editingId === feed.id ? 'Close' : 'Edit'}
+                </button>
+                <button class="text-xs text-[var(--color-private)] hover:underline" onclick={() => deleteFeed(feed)}>
+                  delete
+                </button>
+              </span>
+            </div>
+
+            {#if editingId === feed.id}
+              <div class="mt-2 space-y-2 border-t border-dashed border-[var(--color-line)] pt-2">
+                <div class="flex flex-wrap items-end gap-3">
+                  <label class="flex flex-col text-xs text-[var(--color-muted)]">
+                    Label
+                    <input
+                      value={feed.label}
+                      class="{inputCls} w-48"
+                      onchange={(e) => app.updateFeed(feed.id, { label: e.currentTarget.value })}
+                    />
+                  </label>
+                  <label class="flex flex-col text-xs text-[var(--color-muted)]">
+                    Project
+                    <select
+                      value={feed.project}
+                      class="{inputCls} w-48"
+                      onchange={(e) => app.updateFeed(feed.id, { project: e.currentTarget.value })}
+                    >
+                      <option value="">— none —</option>
+                      {#each app.projects as p (p.slug)}
+                        <option value={p.slug}>{p.entry.frontmatter.title}</option>
+                      {/each}
+                      {#if feed.project && !app.projects.some((p) => p.slug === feed.project)}
+                        <option value={feed.project}>{feed.project}</option>
+                      {/if}
+                    </select>
+                  </label>
+                  {#if feed.kind === 'github' || feed.kind === 'asana'}
+                    <label class="flex flex-col text-xs text-[var(--color-muted)]">
+                      Window
+                      <select
+                        value={feed.window}
+                        class={inputCls}
+                        onchange={(e) => app.updateFeed(feed.id, { window: e.currentTarget.value as 'fixed' | 'rolling' })}
+                      >
+                        <option value="fixed">Fixed (use saved since/until)</option>
+                        <option value="rolling">Rolling (since = last run)</option>
+                      </select>
+                    </label>
+                  {/if}
+                </div>
+                {#if !isPickerKind(feed.kind)}
+                  <div class="flex flex-wrap items-center gap-4">
+                    <label class="flex items-center gap-1.5 text-xs text-[var(--color-muted)]">
+                      <input
+                        type="checkbox"
+                        checked={feed.private}
+                        onchange={() => app.updateFeed(feed.id, { private: !feed.private })}
+                      />
+                      Stage private
+                    </label>
+                    <label class="flex items-center gap-1.5 text-xs text-[var(--color-muted)] {app.llmReady ? '' : 'opacity-60'}">
+                      <input
+                        type="checkbox"
+                        checked={feed.useLlm}
+                        disabled={!app.llmReady}
+                        onchange={() => app.updateFeed(feed.id, { useLlm: !feed.useLlm })}
+                      />
+                      Use LLM triage
+                    </label>
+                  </div>
+                {:else}
+                  <p class="text-xs text-[var(--color-private)]">
+                    Always private &amp; prefilter-only — chat history never reaches the cloud.
+                  </p>
+                {/if}
+                <label class="flex items-center gap-1.5 text-xs text-[var(--color-muted)]">
+                  <input
+                    type="checkbox"
+                    checked={feed.runOnOpen}
+                    onchange={() => app.updateFeed(feed.id, { runOnOpen: !feed.runOnOpen })}
+                  />
+                  Run on open (when this folder is opened)
+                </label>
+                <p class="text-xs text-[var(--color-muted)]">
+                  Fetch params come from when you saved it. To change them, configure the source below
+                  and save a new feed.
+                </p>
+              </div>
+            {/if}
+          </li>
+        {/each}
+      </ul>
+    {/if}
+  </section>
+
+  <!-- Last refresh summary -->
+  {#if app.lastRefreshReport}
+    {@const rr = app.lastRefreshReport}
+    <section class="space-y-1 rounded-lg border border-[var(--color-line)] bg-gray-50 p-4 text-sm dark:bg-white/5">
+      <h2 class="text-sm font-semibold">Last refresh</h2>
+      <p class="text-[var(--color-muted)]">
+        Fetched {rr.totalFetched} ·
+        <strong class="text-green-700 dark:text-green-300">staged {rr.totalStaged}</strong>
+        across {rr.results.length} feed{rr.results.length === 1 ? '' : 's'}
+      </p>
+      <ul class="text-xs text-[var(--color-muted)]">
+        {#each rr.results as r (r.id)}
+          <li>
+            <span class="font-medium">{r.label}</span> ({r.kind}) —
+            {#if r.report}
+              staged {r.report.staged}, {r.report.skippedPromoted + r.report.skippedRejected} already known
+            {:else}
+              <span class="text-amber-700 dark:text-amber-300">failed: {r.error}</span>
+            {/if}
+          </li>
+        {/each}
+      </ul>
+      {#if rr.totalStaged > 0}
+        <p><a href="/inbox" class="text-[var(--color-accent)] hover:underline">Review {rr.totalStaged} candidate{rr.totalStaged === 1 ? '' : 's'} in the Inbox →</a></p>
+      {/if}
+    </section>
+  {/if}
 
   <!-- Triage (applies to every import) -->
   <section class="space-y-2 border-t border-[var(--color-line)] pt-5">
@@ -232,6 +451,7 @@
     <button class={runCls} disabled={app.busy || !app.importSettings.github.user.trim()} onclick={runGithub}>
       Run GitHub import
     </button>
+    {@render saveAsFeedRow('github')}
   </section>
 
   <!-- Asana -->
@@ -282,6 +502,7 @@
       </label>
     </div>
     <button class={runCls} disabled={app.busy} onclick={runAsana}>Run Asana import</button>
+    {@render saveAsFeedRow('asana')}
   </section>
 
   <!-- Gmail -->
@@ -306,6 +527,7 @@
     <button class={runCls} disabled={app.busy || !app.importSettings.gmail.query.trim()} onclick={runGmail}>
       Run Gmail import
     </button>
+    {@render saveAsFeedRow('gmail')}
   </section>
 
   <!-- LinkedIn -->
@@ -372,6 +594,7 @@
       >
         Import {app.claudeCodeSelected.length} project{app.claudeCodeSelected.length === 1 ? '' : 's'}
       </button>
+      {@render saveAsFeedRow('claude-code')}
     {/if}
   </section>
 
@@ -427,6 +650,7 @@
       >
         Import {app.warpSelected.length} project{app.warpSelected.length === 1 ? '' : 's'}
       </button>
+      {@render saveAsFeedRow('warp')}
     {/if}
   </section>
 
