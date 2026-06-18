@@ -59,6 +59,22 @@
   --jv-chip-bg: #f4f4f0; /* tag chips, count badges */
   --jv-heat-empty: #edefe9; /* zero-count heatmap cell */
   --jv-row-detail: #fbfbf9; /* table/calendar detail surface */
+
+  /* Import dashboard accents (design handoff). Prototype-only colors that have
+     no semantic --color-* token; each gets a lightened dark variant below so
+     the blue feeds hero + green last-refresh card read on the dark paper. */
+  --imp-feed-from: #f4f7ff; /* feeds hero gradient start */
+  --imp-feed-to: #eef2fe; /* feeds hero gradient end */
+  --imp-feed-border: #d4dcf5;
+  --imp-feed-ink: #2a3a7a; /* feeds hero heading text */
+  --imp-feed-faint: #7a86b8; /* feeds hero last-run text */
+  --imp-ok: #1f9e6f; /* status "ok" dot, success accents */
+  --imp-ok-deep: #176b4d; /* last-refresh headings + count */
+  --imp-ok-mid: #3f7a5f; /* last-refresh sublabels */
+  --imp-ok-soft: #5a8a72; /* last-refresh faint detail */
+  --imp-ok-bg: #f3f9f5; /* last-refresh card surface */
+  --imp-ok-border: #cfe0d6;
+  --imp-tile-bg: #f4f4f0; /* source row icon-tile background */
 }
 
 :root.dark {
@@ -89,6 +105,20 @@
   --jv-chip-bg: #26272c;
   --jv-heat-empty: #232429;
   --jv-row-detail: #1b1c21;
+
+  /* Import dashboard accents — dark variants. */
+  --imp-feed-from: #1c2236;
+  --imp-feed-to: #191f2e;
+  --imp-feed-border: #303a5e;
+  --imp-feed-ink: #aab6ee;
+  --imp-feed-faint: #8088b8;
+  --imp-ok: #34c794;
+  --imp-ok-deep: #7fdcb8;
+  --imp-ok-mid: #6fc39e;
+  --imp-ok-soft: #5a9c80;
+  --imp-ok-bg: #14241d;
+  --imp-ok-border: #244a3a;
+  --imp-tile-bg: #26272c;
 }
 
 /* Expansion entrance from the prototype; chevron rotation lives inline.

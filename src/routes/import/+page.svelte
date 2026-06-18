@@ -3,6 +3,7 @@
   import { isPickerKind } from '$lib/core';
   import { closeDatePicker } from '$lib/actions/closeDatePicker';
   import CredentialHelp from '$lib/components/CredentialHelp.svelte';
+  import Icon from '$lib/components/Icon.svelte';
 
   // Transient token-entry boxes (the saved value lives in the keyring, never here).
   let tokens = $state<Record<LiveSource, string>>({ github: '', asana: '', gmail: '' });
@@ -11,6 +12,18 @@
   let feedLabels = $state<Record<string, string>>({});
   // The feed currently being edited inline in the list (spec §6.2), or null.
   let editingId = $state<string | null>(null);
+
+  // Which source accordion rows are expanded (design handoff). One open by
+  // default; multiple may be open at once.
+  let open = $state<Set<string>>(new Set(['github']));
+  function toggleOpen(id: string) {
+    const next = new Set(open);
+    next.has(id) ? next.delete(id) : next.add(id);
+    open = next;
+  }
+
+  // The expandable "Defaults" panel under the bar (triage + project copy).
+  let showDefaults = $state(false);
 
   /** Snapshot the current form state for `kind` into a new feed (spec §6.1). */
   function saveAsFeed(kind: FeedKind) {
@@ -106,12 +119,76 @@
     app.warpSelected = sel.includes(dir) ? sel.filter((d) => d !== dir) : [...sel, dir];
   }
 
+  // --- Source registry (design handoff): metadata for the three accordion
+  // groups. Behavior is unchanged — each row's body is the existing per-source
+  // form, just moved inside a collapsible row.
+  type Cat = 'connected' | 'local' | 'archive';
+  interface SourceMeta {
+    id: string;
+    name: string;
+    glyph: string;
+    sub: string;
+    cat: Cat;
+  }
+  const SOURCES: SourceMeta[] = [
+    { id: 'github', name: 'GitHub', glyph: 'commit', sub: 'Issues & PRs you authored', cat: 'connected' },
+    { id: 'asana', name: 'Asana', glyph: 'task_alt', sub: 'Tasks you touched', cat: 'connected' },
+    { id: 'gmail', name: 'Gmail', glyph: 'mail', sub: 'Subjects & snippets only', cat: 'connected' },
+    { id: 'claude-code', name: 'Claude Code', glyph: 'terminal', sub: 'Session history · ~/.claude/projects', cat: 'local' },
+    { id: 'warp', name: 'Warp', glyph: 'bolt', sub: 'Agent-mode history · warp.sqlite', cat: 'local' },
+    { id: 'linkedin', name: 'LinkedIn', glyph: 'work', sub: 'CSV data export', cat: 'archive' },
+    { id: 'resume', name: 'Résumé', glyph: 'description', sub: 'PDF / DOCX', cat: 'archive' }
+  ];
+  const GROUPS: { cat: Cat; title: string; note: string }[] = [
+    { cat: 'connected', title: 'Connected services', note: 'Live APIs · token in OS keyring' },
+    { cat: 'local', title: 'Local history', note: 'Zero-auth · always private' },
+    { cat: 'archive', title: 'Archives & documents', note: 'One-off file imports' }
+  ];
+
+  /** Render-time status derived from existing app state (design handoff §3). */
+  function sourceStatus(id: string): 'ok' | 'warn' | 'neutral' {
+    if (id === 'github' || id === 'asana' || id === 'gmail')
+      return app.tokenPresent[id] ? 'ok' : 'warn';
+    if (id === 'resume') return app.llmReady && app.docsAvailable ? 'ok' : 'warn';
+    if (id === 'linkedin') return 'neutral';
+    return 'ok'; // claude-code / warp — zero-auth, always ready
+  }
+  /** "Set up" = has what it needs to run; drives the setup-progress meter. */
+  function sourceReady(id: string): boolean {
+    const st = sourceStatus(id);
+    return id === 'linkedin' ? true : st === 'ok';
+  }
+  function statusLabel(s: SourceMeta): string {
+    const st = sourceStatus(s.id);
+    if (st === 'ok') return s.cat === 'connected' ? 'Connected' : s.cat === 'local' ? 'Ready' : '';
+    if (st === 'warn') return s.cat === 'archive' ? 'Needs AI provider' : 'Needs token';
+    return s.cat === 'archive' ? 'File import' : '';
+  }
+  function statusCls(id: string): string {
+    const st = sourceStatus(id);
+    if (st === 'ok') return 'text-[var(--imp-ok)]';
+    if (st === 'warn') return 'text-[var(--color-private)]';
+    return 'text-[var(--color-muted)]';
+  }
+  /** Most-recent run across the feeds of this source kind, or '—' if untracked. */
+  function lastRunFor(id: string): string {
+    const stamps = app.feeds
+      .filter((f) => f.kind === id && f.lastRunAt)
+      .map((f) => f.lastRunAt as string)
+      .sort();
+    return stamps.length ? lastRun(stamps[stamps.length - 1]) : '—';
+  }
+
+  const readyCount = $derived(SOURCES.filter((s) => sourceReady(s.id)).length);
+  const totalSources = SOURCES.length;
+  const readyPct = $derived(Math.round((readyCount / totalSources) * 100));
+
   const inputCls =
     'mt-0.5 rounded border border-[var(--color-line)] px-2 py-1.5 text-sm';
   const btnCls =
     'rounded border border-[var(--color-line)] px-3 py-1.5 text-sm hover:bg-gray-50 dark:hover:bg-white/5 disabled:opacity-50';
   const runCls =
-    'rounded bg-[var(--color-accent)] px-3 py-1.5 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50';
+    'inline-flex items-center gap-1.5 rounded bg-[var(--color-accent)] px-3 py-1.5 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50';
 </script>
 
 {#snippet tokenRow(source: LiveSource, placeholder: string)}
@@ -152,233 +229,298 @@
       onkeydown={(e) => { if (e.key === 'Enter') saveAsFeed(kind); }}
     />
     <button class={btnCls} disabled={!feedLabels[kind]?.trim()} onclick={() => saveAsFeed(kind)}>
+      <Icon name="bookmark_add" size={16} />
       Save as feed
     </button>
   </div>
 {/snippet}
 
-<div class="max-w-2xl space-y-8">
-  <section>
-    <h1 class="text-lg font-semibold">Import</h1>
-    <p class="mt-1 text-sm text-[var(--color-muted)]">
-      Fetch from your data sources and stage the results as candidates for review. Nothing here
-      writes to your record — everything lands in the <a href="/inbox" class="text-[var(--color-accent)] hover:underline">Inbox</a>,
-      private by default, until you promote it. Re-running never re-proposes something you already
-      promoted or rejected. Tokens are stored in the OS keyring, never in the record.
-    </p>
-  </section>
+<!-- The collapsed header shared by every source row (design handoff §3). -->
+{#snippet sourceHeader(s: SourceMeta)}
+  {@const isOpen = open.has(s.id)}
+  {@const label = statusLabel(s)}
+  <button
+    class="flex w-full items-center gap-3 px-[15px] py-3 text-left"
+    onclick={() => toggleOpen(s.id)}
+    aria-expanded={isOpen}
+  >
+    <span class="flex h-[34px] w-[34px] flex-none items-center justify-center rounded-[9px] bg-[var(--imp-tile-bg)] text-[var(--color-muted)]">
+      <Icon name={s.glyph} size={19} />
+    </span>
+    <span class="flex min-w-0 flex-1 flex-col">
+      <span class="text-sm font-semibold">{s.name}</span>
+      <span class="truncate text-xs text-[var(--color-muted)]">{s.sub}</span>
+    </span>
+    <span class="inline-flex flex-none items-center gap-1.5 text-[11px] font-semibold {statusCls(s.id)}">
+      <span class="h-[7px] w-[7px] rounded-full bg-current"></span>{label}
+    </span>
+    <span class="hidden w-[84px] flex-none text-right text-[11px] text-[var(--color-muted)] sm:block">
+      last run {lastRunFor(s.id)}
+    </span>
+    <span class="jv-chevron flex-none text-[var(--color-muted)] transition-transform {isOpen ? 'rotate-180' : ''}">
+      <Icon name="expand_more" size={20} />
+    </span>
+  </button>
+{/snippet}
 
-  <!-- Saved feeds + Refresh all -->
-  <section class="space-y-3 rounded-lg border border-[var(--color-line)] bg-gray-50 p-4 dark:bg-white/5">
-    <div class="flex items-center justify-between gap-3">
-      <div>
-        <h2 class="text-sm font-semibold">Feeds</h2>
-        <p class="text-xs text-[var(--color-muted)]">
-          Saved import configurations you can re-run. Machine-local (never synced into your record),
-          and tokens stay in the keyring. Re-running only stages what's new.
-        </p>
-      </div>
-      <button
-        class={runCls}
-        disabled={app.busy || enabledCount === 0}
-        onclick={() => app.refreshAll()}
-      >
-        Refresh all ({enabledCount} enabled)
-      </button>
+{#snippet groupHead(title: string, note: string)}
+  <div class="mb-2.5 flex items-center gap-2.5">
+    <h2 class="text-xs font-bold uppercase tracking-wide">{title}</h2>
+    <span class="text-[11.5px] text-[var(--color-muted)]">{note}</span>
+    <span class="h-px flex-1 bg-[var(--jv-hair)]"></span>
+  </div>
+{/snippet}
+
+<!-- Body wrapper: the accent top hairline + padding shared by every open row. -->
+{#snippet bodyOpen(children: import('svelte').Snippet)}
+  <div class="jv-rise border-t border-[var(--jv-hair)] px-[15px] pb-4 pt-3.5">
+    <div class="space-y-2">
+      {@render children()}
     </div>
+  </div>
+{/snippet}
 
-    {#if app.feeds.length === 0}
-      <p class="text-xs text-[var(--color-muted)]">
-        No feeds yet — configure a source below and use “Save as feed”.
-      </p>
-    {:else}
-      <ul class="space-y-1.5">
-        {#each app.feeds as feed (feed.id)}
-          <li class="rounded border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-2 text-sm">
-            <div class="flex flex-wrap items-center gap-2">
-              <input
-                type="checkbox"
-                checked={feed.enabled}
-                title={feed.enabled ? 'Enabled — included in Refresh all' : 'Disabled — skipped by Refresh all'}
-                onchange={() => app.updateFeed(feed.id, { enabled: !feed.enabled })}
-              />
-              <span class="font-medium {feed.enabled ? '' : 'opacity-50'}">{feed.label}</span>
-              <span class="rounded bg-[var(--color-line)] px-1.5 py-0.5 text-xs text-[var(--color-muted)]">
-                {feed.kind}
-              </span>
-              {#if feed.kind === 'github' || feed.kind === 'asana'}
-                <span class="text-xs text-[var(--color-muted)]">{feed.window}</span>
-              {/if}
-              <span class="text-xs text-[var(--color-muted)]">last run {lastRun(feed.lastRunAt)}</span>
-              <span class="ml-auto flex items-center gap-2">
-                <button class={btnCls} disabled={app.busy} onclick={() => app.runFeed(feed)}>Run</button>
-                <button class={btnCls} onclick={() => (editingId = editingId === feed.id ? null : feed.id)}>
-                  {editingId === feed.id ? 'Close' : 'Edit'}
-                </button>
-                <button class="text-xs text-[var(--color-private)] hover:underline" onclick={() => deleteFeed(feed)}>
-                  delete
-                </button>
-              </span>
-            </div>
+<div class="mx-auto max-w-[1080px] space-y-0 px-1 pb-16">
+  <header>
+    <h1 class="text-[25px] font-semibold tracking-tight">Import</h1>
+    <p class="mt-1 max-w-xl text-sm leading-relaxed text-[var(--color-muted)]">
+      Pull from your sources into the
+      <a href="/inbox" class="text-[var(--color-accent)] hover:underline">Inbox</a> — everything lands
+      private until you promote it, and re-runs never re-propose what you've already handled.
+      Tokens are stored in the OS keyring, never in the record.
+    </p>
+  </header>
 
-            {#if editingId === feed.id}
-              <div class="mt-2 space-y-2 border-t border-dashed border-[var(--color-line)] pt-2">
-                <div class="flex flex-wrap items-end gap-3">
-                  <label class="flex flex-col text-xs text-[var(--color-muted)]">
-                    Label
-                    <input
-                      value={feed.label}
-                      class="{inputCls} w-48"
-                      onchange={(e) => app.updateFeed(feed.id, { label: e.currentTarget.value })}
-                    />
-                  </label>
-                  <label class="flex flex-col text-xs text-[var(--color-muted)]">
-                    Project
-                    <select
-                      value={feed.project}
-                      class="{inputCls} w-48"
-                      onchange={(e) => app.updateFeed(feed.id, { project: e.currentTarget.value })}
-                    >
-                      <option value="">— none —</option>
-                      {#each app.projects as p (p.slug)}
-                        <option value={p.slug}>{p.entry.frontmatter.title}</option>
-                      {/each}
-                      {#if feed.project && !app.projects.some((p) => p.slug === feed.project)}
-                        <option value={feed.project}>{feed.project}</option>
-                      {/if}
-                    </select>
-                  </label>
-                  {#if feed.kind === 'github' || feed.kind === 'asana'}
+  <!-- Hero: feeds (left) + last refresh (right) -->
+  <div class="mt-4 grid grid-cols-1 gap-3.5 md:grid-cols-2">
+    <!-- Feeds card -->
+    <div
+      class="flex flex-col gap-3 rounded-[14px] border border-[var(--imp-feed-border)] p-[18px]"
+      style="background:linear-gradient(135deg,var(--imp-feed-from),var(--imp-feed-to));"
+    >
+      <div class="flex items-center gap-2.5">
+        <span class="text-[var(--color-accent)]"><Icon name="bookmarks" size={20} /></span>
+        <span class="text-[13px] font-semibold text-[var(--imp-feed-ink)]">
+          {enabledCount} feed{enabledCount === 1 ? '' : 's'} ready to run
+        </span>
+        <button
+          class="{runCls} ml-auto"
+          disabled={app.busy || enabledCount === 0}
+          onclick={() => app.refreshAll()}
+        >
+          <Icon name="sync" size={17} />
+          Refresh all
+        </button>
+      </div>
+
+      {#if app.feeds.length === 0}
+        <p class="text-xs text-[var(--imp-feed-faint)]">
+          No feeds yet — configure a source below and use “Save as feed”.
+        </p>
+      {:else}
+        <div class="flex flex-col gap-1.5">
+          {#each app.feeds as feed (feed.id)}
+            <div class="rounded-lg bg-white/60 px-2.5 py-2 dark:bg-white/5">
+              <div class="flex items-center gap-2.5">
+                <button
+                  class="flex h-[18px] w-[30px] flex-none rounded-full p-0.5 {feed.enabled ? 'justify-end bg-[var(--color-accent)]' : 'justify-start bg-[var(--color-line)]'}"
+                  title={feed.enabled ? 'Enabled — included in Refresh all' : 'Disabled — skipped by Refresh all'}
+                  onclick={() => app.updateFeed(feed.id, { enabled: !feed.enabled })}
+                >
+                  <span class="block h-3.5 w-3.5 rounded-full bg-white"></span>
+                </button>
+                <span class="truncate text-[12.5px] font-medium {feed.enabled ? '' : 'opacity-50'}">
+                  {feed.label}
+                </span>
+                <span class="flex-none rounded bg-[var(--color-accent)]/10 px-1.5 py-0.5 text-[9.5px] font-bold uppercase tracking-wide text-[var(--color-accent)]">
+                  {feed.kind}
+                </span>
+                <span class="ml-auto flex flex-none items-center gap-1.5">
+                  <span class="text-[10.5px] text-[var(--imp-feed-faint)]">last run {lastRun(feed.lastRunAt)}</span>
+                  <button
+                    class="flex h-[26px] w-[26px] items-center justify-center rounded-[7px] bg-[var(--color-accent)]/10 text-[var(--color-accent)] disabled:opacity-50"
+                    title="Run now"
+                    disabled={app.busy}
+                    onclick={() => app.runFeed(feed)}
+                  >
+                    <Icon name="play_arrow" size={15} />
+                  </button>
+                  <button
+                    class="rounded px-1.5 text-[11px] text-[var(--color-muted)] hover:underline"
+                    onclick={() => (editingId = editingId === feed.id ? null : feed.id)}
+                  >
+                    {editingId === feed.id ? 'Close' : 'Edit'}
+                  </button>
+                </span>
+              </div>
+
+              {#if editingId === feed.id}
+                <div class="mt-2 space-y-2 border-t border-dashed border-[var(--color-line)] pt-2">
+                  <div class="flex flex-wrap items-end gap-3">
                     <label class="flex flex-col text-xs text-[var(--color-muted)]">
-                      Window
+                      Label
+                      <input
+                        value={feed.label}
+                        class="{inputCls} w-48"
+                        onchange={(e) => app.updateFeed(feed.id, { label: e.currentTarget.value })}
+                      />
+                    </label>
+                    <label class="flex flex-col text-xs text-[var(--color-muted)]">
+                      Project
                       <select
-                        value={feed.window}
-                        class={inputCls}
-                        onchange={(e) => app.updateFeed(feed.id, { window: e.currentTarget.value as 'fixed' | 'rolling' })}
+                        value={feed.project}
+                        class="{inputCls} w-48"
+                        onchange={(e) => app.updateFeed(feed.id, { project: e.currentTarget.value })}
                       >
-                        <option value="fixed">Fixed (use saved since/until)</option>
-                        <option value="rolling">Rolling (since = last run)</option>
+                        <option value="">— none —</option>
+                        {#each app.projects as p (p.slug)}
+                          <option value={p.slug}>{p.entry.frontmatter.title}</option>
+                        {/each}
+                        {#if feed.project && !app.projects.some((p) => p.slug === feed.project)}
+                          <option value={feed.project}>{feed.project}</option>
+                        {/if}
                       </select>
                     </label>
-                  {/if}
-                </div>
-                {#if !isPickerKind(feed.kind)}
-                  <div class="flex flex-wrap items-center gap-4">
-                    <label class="flex items-center gap-1.5 text-xs text-[var(--color-muted)]">
-                      <input
-                        type="checkbox"
-                        checked={feed.private}
-                        onchange={() => app.updateFeed(feed.id, { private: !feed.private })}
-                      />
-                      Stage private
-                    </label>
-                    <label class="flex items-center gap-1.5 text-xs text-[var(--color-muted)] {app.llmReady ? '' : 'opacity-60'}">
-                      <input
-                        type="checkbox"
-                        checked={feed.useLlm}
-                        disabled={!app.llmReady}
-                        onchange={() => app.updateFeed(feed.id, { useLlm: !feed.useLlm })}
-                      />
-                      Use LLM triage
-                    </label>
+                    {#if feed.kind === 'github' || feed.kind === 'asana'}
+                      <label class="flex flex-col text-xs text-[var(--color-muted)]">
+                        Window
+                        <select
+                          value={feed.window}
+                          class={inputCls}
+                          onchange={(e) => app.updateFeed(feed.id, { window: e.currentTarget.value as 'fixed' | 'rolling' })}
+                        >
+                          <option value="fixed">Fixed (use saved since/until)</option>
+                          <option value="rolling">Rolling (since = last run)</option>
+                        </select>
+                      </label>
+                    {/if}
                   </div>
-                {:else}
-                  <p class="text-xs text-[var(--color-private)]">
-                    Always private &amp; prefilter-only — chat history never reaches the cloud.
-                  </p>
-                {/if}
-                <label class="flex items-center gap-1.5 text-xs text-[var(--color-muted)]">
-                  <input
-                    type="checkbox"
-                    checked={feed.runOnOpen}
-                    onchange={() => app.updateFeed(feed.id, { runOnOpen: !feed.runOnOpen })}
-                  />
-                  Run on open (when this folder is opened)
-                </label>
-                <p class="text-xs text-[var(--color-muted)]">
-                  Fetch params come from when you saved it. To change them, configure the source below
-                  and save a new feed.
-                </p>
-              </div>
-            {/if}
-          </li>
-        {/each}
-      </ul>
-    {/if}
-  </section>
-
-  <!-- Last refresh summary -->
-  {#if app.lastRefreshReport}
-    {@const rr = app.lastRefreshReport}
-    <section class="space-y-1 rounded-lg border border-[var(--color-line)] bg-gray-50 p-4 text-sm dark:bg-white/5">
-      <h2 class="text-sm font-semibold">Last refresh</h2>
-      <p class="text-[var(--color-muted)]">
-        Fetched {rr.totalFetched} ·
-        <strong class="text-green-700 dark:text-green-300">staged {rr.totalStaged}</strong>
-        across {rr.results.length} feed{rr.results.length === 1 ? '' : 's'}
-      </p>
-      <ul class="text-xs text-[var(--color-muted)]">
-        {#each rr.results as r (r.id)}
-          <li>
-            <span class="font-medium">{r.label}</span> ({r.kind}) —
-            {#if r.report}
-              staged {r.report.staged}, {r.report.skippedPromoted + r.report.skippedRejected} already known
-            {:else}
-              <span class="text-amber-700 dark:text-amber-300">failed: {r.error}</span>
-            {/if}
-          </li>
-        {/each}
-      </ul>
-      {#if rr.totalStaged > 0}
-        <p><a href="/inbox" class="text-[var(--color-accent)] hover:underline">Review {rr.totalStaged} candidate{rr.totalStaged === 1 ? '' : 's'} in the Inbox →</a></p>
+                  {#if !isPickerKind(feed.kind)}
+                    <div class="flex flex-wrap items-center gap-4">
+                      <label class="flex items-center gap-1.5 text-xs text-[var(--color-muted)]">
+                        <input
+                          type="checkbox"
+                          checked={feed.private}
+                          onchange={() => app.updateFeed(feed.id, { private: !feed.private })}
+                        />
+                        Stage private
+                      </label>
+                      <label class="flex items-center gap-1.5 text-xs text-[var(--color-muted)] {app.llmReady ? '' : 'opacity-60'}">
+                        <input
+                          type="checkbox"
+                          checked={feed.useLlm}
+                          disabled={!app.llmReady}
+                          onchange={() => app.updateFeed(feed.id, { useLlm: !feed.useLlm })}
+                        />
+                        Use LLM triage
+                      </label>
+                    </div>
+                  {:else}
+                    <p class="text-xs text-[var(--color-private)]">
+                      Always private &amp; prefilter-only — chat history never reaches the cloud.
+                    </p>
+                  {/if}
+                  <label class="flex items-center gap-1.5 text-xs text-[var(--color-muted)]">
+                    <input
+                      type="checkbox"
+                      checked={feed.runOnOpen}
+                      onchange={() => app.updateFeed(feed.id, { runOnOpen: !feed.runOnOpen })}
+                    />
+                    Run on open (when this folder is opened)
+                  </label>
+                  <div class="flex items-center justify-between gap-2">
+                    <p class="text-xs text-[var(--color-muted)]">
+                      Fetch params come from when you saved it. To change them, configure the source
+                      below and save a new feed.
+                    </p>
+                    <button class="flex-none text-xs text-[var(--color-private)] hover:underline" onclick={() => deleteFeed(feed)}>
+                      Delete feed
+                    </button>
+                  </div>
+                </div>
+              {/if}
+            </div>
+          {/each}
+        </div>
       {/if}
-    </section>
-  {/if}
+    </div>
 
-  <!-- Triage (applies to every import) -->
-  <section class="space-y-2 border-t border-[var(--color-line)] pt-5">
-    <h2 class="text-sm font-semibold">Triage</h2>
-    <p class="text-xs text-[var(--color-muted)]">
-      A free, local prefilter always runs — it flags obvious noise (automated email, version-bump
-      PRs, routine chores) as <em>frivolous</em> so the inbox can surface real work first. It never
-      deletes anything; you still promote or reject every item yourself.
-    </p>
-    <label class="flex items-start gap-2 text-sm {app.llmReady ? '' : 'opacity-60'}">
-      <input
-        type="checkbox"
-        class="mt-0.5"
-        disabled={!app.llmReady}
-        bind:checked={app.importSettings.triage.useLlm}
-      />
-      <span>
-        Use LLM triage for ambiguous items
-        {#if app.llmConfig}(sends them to <strong>{app.llmConfig.provider}</strong>){/if}
-        {#if !app.llmReady}
-          <span class="text-[var(--color-muted)]">— configure a provider in Data → AI provider first</span>
-        {:else if app.llmConfig?.provider === 'anthropic'}
-          <span class="block text-xs text-amber-700 dark:text-amber-300">
-            Only items the prefilter can't decide are sent to Anthropic — content leaves your
-            machine. Gmail items are metadata-only (subject + 200-char snippet), so what could ever
-            leave is minimal.
-          </span>
+    <!-- Last refresh card -->
+    <div class="flex flex-col rounded-[14px] border border-[var(--imp-ok-border)] bg-[var(--imp-ok-bg)] p-[18px]">
+      {#if !app.lastRefreshReport && !app.lastImportReport}
+        <div class="flex items-center gap-1.5">
+          <span class="text-[var(--imp-ok)]"><Icon name="check_circle" size={18} /></span>
+          <span class="text-[13px] font-semibold text-[var(--imp-ok-deep)]">Last refresh</span>
+        </div>
+        <p class="mt-2 text-xs text-[var(--imp-ok-soft)]">Run a refresh to see results here.</p>
+      {/if}
+
+      {#if app.lastRefreshReport}
+        {@const rr = app.lastRefreshReport}
+        <div class="flex items-center gap-1.5">
+          <span class="text-[var(--imp-ok)]"><Icon name="check_circle" size={18} /></span>
+          <span class="text-[13px] font-semibold text-[var(--imp-ok-deep)]">Last refresh</span>
+        </div>
+        <div class="mt-2.5 flex items-baseline gap-1.5">
+          <span class="text-[34px] font-bold leading-none tracking-tight text-[var(--imp-ok-deep)]">{rr.totalStaged}</span>
+          <span class="text-[13px] text-[var(--imp-ok-mid)]">staged for review</span>
+        </div>
+        <div class="mt-1 text-xs text-[var(--imp-ok-soft)]">
+          {rr.totalFetched} fetched across {rr.results.length} feed{rr.results.length === 1 ? '' : 's'}
+        </div>
+        <div class="mt-2.5 flex flex-col gap-1.5">
+          {#each rr.results as r (r.id)}
+            <div class="flex items-center gap-2 text-[11.5px] text-[var(--imp-ok-mid)]">
+              {#if r.report}
+                <span class="font-semibold text-[var(--imp-ok-deep)]">+{r.report.staged}</span>
+                <span class="truncate">{r.label}</span>
+                <span class="ml-auto flex-none text-[var(--imp-ok-soft)]">
+                  {r.report.skippedPromoted + r.report.skippedRejected} known
+                </span>
+              {:else}
+                <span class="truncate text-amber-700 dark:text-amber-300">{r.label} — failed: {r.error}</span>
+              {/if}
+            </div>
+          {/each}
+        </div>
+        {#if rr.totalStaged > 0}
+          <a href="/inbox" class="mt-auto inline-flex items-center gap-1.5 pt-3 text-[12.5px] font-semibold text-[var(--imp-ok-deep)] hover:underline">
+            Review {rr.totalStaged} in Inbox <Icon name="arrow_forward" size={16} />
+          </a>
         {/if}
-      </span>
-    </label>
-  </section>
+      {/if}
 
-  <!-- Project pre-selection (applies to every import) -->
-  <section class="space-y-2 border-t border-[var(--color-line)] pt-5">
-    <h2 class="text-sm font-semibold">Project</h2>
-    <p class="text-xs text-[var(--color-muted)]">
-      Pre-assign everything this import stages to a project. It only pre-fills the
-      <a href="/inbox" class="text-[var(--color-accent)] hover:underline">Inbox</a> picker — you still
-      confirm (or change) the project when you promote each item, and a choice here overrides a
-      source's own guess (e.g. the GitHub repo).
-    </p>
-    <label class="flex flex-col text-xs text-[var(--color-muted)]">
-      Assign imported items to
-      <select bind:value={app.importProject} class="{inputCls} w-72">
-        <option value="">— none (use each source's suggestion) —</option>
+      {#if app.lastImportReport}
+        {@const r = app.lastImportReport}
+        <div class="{app.lastRefreshReport ? 'mt-3 border-t border-[var(--imp-ok-border)] pt-3' : 'mt-2.5'} text-[11.5px] text-[var(--imp-ok-mid)]">
+          <span class="font-semibold text-[var(--imp-ok-deep)]">Last import</span> · fetched {r.fetched} ·
+          staged {r.staged} · {r.skippedPromoted + r.skippedRejected} already known
+          {#if r.errors.length}· <span class="text-amber-700 dark:text-amber-300">{r.errors.length} error{r.errors.length === 1 ? '' : 's'}</span>{/if}
+        </div>
+        {#if r.staged > 0 && !app.lastRefreshReport}
+          <a href="/inbox" class="mt-2 inline-flex items-center gap-1.5 text-[12.5px] font-semibold text-[var(--imp-ok-deep)] hover:underline">
+            Review {r.staged} in Inbox <Icon name="arrow_forward" size={16} />
+          </a>
+        {/if}
+      {/if}
+    </div>
+  </div>
+
+  <!-- Setup progress + defaults bar -->
+  <div class="mt-3.5 flex flex-wrap items-center gap-4 rounded-[11px] border border-[var(--color-line)] bg-[var(--color-bar)] px-4 py-3">
+    <div class="flex items-center gap-2.5">
+      <span class="text-[12.5px] font-semibold">{readyCount} of {totalSources} sources set up</span>
+      <span class="h-1.5 w-28 overflow-hidden rounded-full bg-[var(--color-line)]">
+        <span class="block h-full rounded-full bg-[var(--imp-ok)]" style="width:{readyPct}%;"></span>
+      </span>
+    </div>
+    <div class="flex items-center gap-2.5 border-l border-[var(--color-line)] pl-4">
+      <span class="text-xs text-[var(--color-muted)]">Stage to</span>
+      <select
+        bind:value={app.importProject}
+        class="max-w-[10rem] rounded border border-[var(--color-line)] bg-transparent px-1.5 py-0.5 text-xs"
+      >
+        <option value="">No project</option>
         {#each app.projects as p (p.slug)}
           <option value={p.slug}>{p.entry.frontmatter.title}</option>
         {/each}
@@ -386,329 +528,412 @@
           <option value={app.importProject}>{app.importProject}</option>
         {/if}
       </select>
-    </label>
-  </section>
-
-  <!-- GitHub -->
-  <section class="space-y-2 border-t border-[var(--color-line)] pt-5">
-    <h2 class="text-sm font-semibold">GitHub</h2>
-    <p class="text-xs text-[var(--color-muted)]">
-      Issues &amp; PRs you authored in a date range (Search API). A personal access token with
-      <code>repo</code> read scope works.
-    </p>
-    {@render tokenRow('github', 'ghp_…')}
-    <div class="flex flex-wrap items-end gap-2">
-      <label class="flex flex-col text-xs text-[var(--color-muted)]">
-        User (login)
-        <input bind:value={app.importSettings.github.user} placeholder="octocat" class="{inputCls} w-40" />
-      </label>
-      <label class="flex flex-col text-xs text-[var(--color-muted)]">
-        Repo (optional)
-        <input bind:value={app.importSettings.github.repo} placeholder="owner/name" class="{inputCls} w-44" />
-      </label>
-      <label class="flex flex-col text-xs text-[var(--color-muted)]">
-        Since
-        <input type="date" bind:value={app.importSettings.github.since} class={inputCls} use:closeDatePicker />
-      </label>
-      <label class="flex flex-col text-xs text-[var(--color-muted)]">
-        Until
-        <input type="date" bind:value={app.importSettings.github.until} class={inputCls} use:closeDatePicker />
-      </label>
-      <label class="flex flex-col text-xs text-[var(--color-muted)]">
-        Limit
-        <input type="number" min="1" max="300" bind:value={app.importSettings.github.limit} class="{inputCls} w-20" />
-      </label>
+      <span class="text-[var(--color-line)]">·</span>
+      <span class="inline-flex items-center gap-1.5 text-xs text-[var(--imp-ok-deep)]">
+        <span class="h-[7px] w-[7px] rounded-full bg-[var(--imp-ok)]"></span>Local triage on
+      </span>
     </div>
-    <div class="flex flex-wrap items-end gap-4">
-      <label class="flex items-center gap-2 text-xs text-[var(--color-muted)]">
-        <input type="checkbox" bind:checked={app.importSettings.github.importPrivate} />
-        Mark imported entries private
-      </label>
-      <label class="flex items-center gap-2 text-xs text-[var(--color-muted)]">
-        <input type="checkbox" bind:checked={app.importSettings.github.fetchDiscussion} />
-        Fetch PR/issue discussion
-      </label>
-      {#if app.importSettings.github.fetchDiscussion}
-        <label class="flex flex-col text-xs text-[var(--color-muted)]">
-          Comments
-          <select bind:value={app.importSettings.github.commentScope} class={inputCls}>
-            <option value="self">My comments</option>
-            <option value="all">Everyone's</option>
-          </select>
-        </label>
-        <label class="flex flex-col text-xs text-[var(--color-muted)]">
-          Discussion char cap
-          <input
-            type="number"
-            min="1"
-            placeholder="2000"
-            bind:value={app.importSettings.github.discussionCharCap}
-            class="{inputCls} w-24"
-          />
-        </label>
-      {/if}
-    </div>
-    <button class={runCls} disabled={app.busy || !app.importSettings.github.user.trim()} onclick={runGithub}>
-      Run GitHub import
-    </button>
-    {@render saveAsFeedRow('github')}
-  </section>
-
-  <!-- Asana -->
-  <section class="space-y-2 border-t border-[var(--color-line)] pt-5">
-    <h2 class="text-sm font-semibold">Asana</h2>
-    <p class="text-xs text-[var(--color-muted)]">
-      Every task you've worked on — created, commented, assigned, or @mentioned — even ones since
-      reassigned to a reviewer (the durable signal is collaborator membership, not the current
-      assignee). Premium accounts use workspace search; others fall back to project enumeration
-      automatically. Completed tasks are included by default for reconstruction.
-    </p>
-    {@render tokenRow('asana', 'personal access token')}
-    <div class="flex flex-wrap items-end gap-2">
-      <label class="flex flex-col text-xs text-[var(--color-muted)]">
-        Workspace gid (optional)
-        <input bind:value={app.importSettings.asana.workspace} placeholder="first workspace" class="{inputCls} w-44" />
-      </label>
-      <label class="flex flex-col text-xs text-[var(--color-muted)]">
-        Project
-        <select bind:value={app.importSettings.asana.project} class="{inputCls} w-56">
-          <option value="">— all projects in workspace —</option>
-          {#each app.asanaProjects as p (p.gid)}
-            <option value={p.gid}>{p.name}</option>
-          {/each}
-          {#if app.importSettings.asana.project && !app.asanaProjects.some((p) => p.gid === app.importSettings.asana.project)}
-            <option value={app.importSettings.asana.project}>{app.importSettings.asana.project}</option>
-          {/if}
-        </select>
-      </label>
-      <button class={btnCls} disabled={app.busy || !app.tokenPresent.asana} onclick={() => app.loadAsanaProjects()}>
-        Load projects
-      </button>
-      <label class="flex flex-col text-xs text-[var(--color-muted)]">
-        Since
-        <input type="date" bind:value={app.importSettings.asana.since} class="{inputCls} w-40" />
-      </label>
-      <label class="flex flex-col text-xs text-[var(--color-muted)]">
-        Until
-        <input type="date" bind:value={app.importSettings.asana.until} class="{inputCls} w-40" />
-      </label>
-      <label class="flex flex-col text-xs text-[var(--color-muted)]">
-        Limit
-        <input type="number" min="1" max="500" bind:value={app.importSettings.asana.limit} class="{inputCls} w-20" />
-      </label>
-      <label class="flex items-center gap-1.5 text-xs text-[var(--color-muted)]">
-        <input type="checkbox" bind:checked={app.importSettings.asana.includeCompleted} />
-        Include completed
-      </label>
-    </div>
-    <button class={runCls} disabled={app.busy} onclick={runAsana}>Run Asana import</button>
-    {@render saveAsFeedRow('asana')}
-  </section>
-
-  <!-- Gmail -->
-  <section class="space-y-2 border-t border-[var(--color-line)] pt-5">
-    <h2 class="text-sm font-semibold">Gmail</h2>
-    <p class="text-xs text-[var(--color-muted)]">
-      Metadata only — subjects &amp; snippets, never message bodies. Needs a Gmail
-      <code>readonly</code> OAuth access token. The query is the selection, e.g.
-      <code>in:sent after:2019/01/01 before:2020/01/01</code>.
-    </p>
-    {@render tokenRow('gmail', 'OAuth access token (ya29.…)')}
-    <div class="flex flex-wrap items-end gap-2">
-      <label class="flex flex-1 flex-col text-xs text-[var(--color-muted)]">
-        Search query
-        <input bind:value={app.importSettings.gmail.query} placeholder="in:sent after:2019/01/01 before:2020/01/01" class="{inputCls} w-full" />
-      </label>
-      <label class="flex flex-col text-xs text-[var(--color-muted)]">
-        Limit
-        <input type="number" min="1" max="100" bind:value={app.importSettings.gmail.limit} class="{inputCls} w-20" />
-      </label>
-    </div>
-    <button class={runCls} disabled={app.busy || !app.importSettings.gmail.query.trim()} onclick={runGmail}>
-      Run Gmail import
-    </button>
-    {@render saveAsFeedRow('gmail')}
-  </section>
-
-  <!-- LinkedIn -->
-  <section class="space-y-2 border-t border-[var(--color-line)] pt-5">
-    <h2 class="text-sm font-semibold">LinkedIn (archive)</h2>
-    <p class="text-xs text-[var(--color-muted)]">
-      Import-only — LinkedIn has no usable live API. Request your data export (Settings → Data
-      privacy → Get a copy of your data), unzip it, and select the CSVs. Recognized:
-      <code>Positions.csv</code>, <code>Projects.csv</code>, <code>Education.csv</code>.
-    </p>
-    <button class={runCls} disabled={app.busy} onclick={() => app.importLinkedin()}>
-      Choose CSVs &amp; import…
-    </button>
-  </section>
-
-  <!-- Claude Code -->
-  <section class="space-y-2 border-t border-[var(--color-line)] pt-5">
-    <h2 class="text-sm font-semibold">Claude Code (session history)</h2>
-    <p class="text-xs text-[var(--color-muted)]">
-      Zero-auth, import-only. Reads your local Claude Code session logs from
-      <code>~/.claude/projects/</code> and stages one candidate per session — your questions are a
-      timestamped diary of what you were trying to do, pre-anchored to a project. One session = one
-      candidate; only your genuine typed turns become the body (assistant prose is excluded).
-    </p>
-    <p class="text-xs text-[var(--color-private)]">
-      Most sensitive source here, so it never touches the cloud: you pick which projects to import, a
-      local prefilter runs (no LLM triage), and every candidate is private by default until you
-      promote it.
-    </p>
-    <button class={btnCls} disabled={app.busy} onclick={() => app.loadClaudeCodeProjects()}>
-      {app.claudeCodeProjects.length ? 'Rescan projects' : 'Find projects'}
-    </button>
-    {#if app.claudeCodeProjects.length > 0}
-      <fieldset class="space-y-1 rounded border border-[var(--color-line)] p-3">
-        <legend class="flex items-center gap-3 px-1 text-xs text-[var(--color-muted)]">
-          <span>{app.claudeCodeSelected.length} of {app.claudeCodeProjects.length} selected</span>
-          <button class="text-[var(--color-accent)] hover:underline" onclick={() => (app.claudeCodeSelected = app.claudeCodeProjects.map((p) => p.root))}>
-            all
-          </button>
-          <button class="text-[var(--color-muted)] hover:underline" onclick={() => (app.claudeCodeSelected = [])}>
-            none
-          </button>
-        </legend>
-        <div class="max-h-56 space-y-1 overflow-y-auto">
-          {#each app.claudeCodeProjects as p (p.root)}
-            <label class="flex items-center gap-2 text-sm" title={p.root}>
-              <input
-                type="checkbox"
-                checked={app.claudeCodeSelected.includes(p.root)}
-                onchange={() => toggleClaudeCode(p.root)}
-              />
-              <span class="font-medium">{p.name}</span>
-              <span class="text-xs text-[var(--color-muted)]">
-                {p.sessions} session{p.sessions === 1 ? '' : 's'}
-              </span>
-            </label>
-          {/each}
-        </div>
-      </fieldset>
-      <button
-        class={runCls}
-        disabled={app.busy || app.claudeCodeSelected.length === 0}
-        onclick={() => app.importClaudeCode($state.snapshot(app.claudeCodeSelected))}
-      >
-        Import {app.claudeCodeSelected.length} project{app.claudeCodeSelected.length === 1 ? '' : 's'}
-      </button>
-      {@render saveAsFeedRow('claude-code')}
-    {/if}
-  </section>
-
-  <!-- Warp -->
-  <section class="space-y-2 border-t border-[var(--color-line)] pt-5">
-    <h2 class="text-sm font-semibold">Warp (AI history)</h2>
-    <p class="text-xs text-[var(--color-muted)]">
-      Zero-auth, import-only. Reads your local Warp Agent-mode history from
-      <code>warp.sqlite</code> and stages one candidate per conversation — your prompts are a
-      timestamped diary of what you were trying to do, pre-anchored to a project by its working
-      directory. One conversation = one candidate; only your typed prompts become the body (Warp
-      keeps the assistant's replies in the cloud, so they're never imported).
-    </p>
-    <p class="text-xs text-[var(--color-private)]">
-      Most sensitive source here, so it never touches the cloud: you pick which projects to import, a
-      local prefilter runs (no LLM triage), and every candidate is private by default until you
-      promote it. Warp's database is opened read-only.
-    </p>
-    <button class={btnCls} disabled={app.busy} onclick={() => app.loadWarpProjects()}>
-      {app.warpProjects.length ? 'Rescan projects' : 'Find projects'}
-    </button>
-    {#if app.warpProjects.length > 0}
-      <fieldset class="space-y-1 rounded border border-[var(--color-line)] p-3">
-        <legend class="flex items-center gap-3 px-1 text-xs text-[var(--color-muted)]">
-          <span>{app.warpSelected.length} of {app.warpProjects.length} selected</span>
-          <button class="text-[var(--color-accent)] hover:underline" onclick={() => (app.warpSelected = app.warpProjects.map((p) => p.dir))}>
-            all
-          </button>
-          <button class="text-[var(--color-muted)] hover:underline" onclick={() => (app.warpSelected = [])}>
-            none
-          </button>
-        </legend>
-        <div class="max-h-56 space-y-1 overflow-y-auto">
-          {#each app.warpProjects as p (p.dir)}
-            <label class="flex items-center gap-2 text-sm" title={p.dir}>
-              <input
-                type="checkbox"
-                checked={app.warpSelected.includes(p.dir)}
-                onchange={() => toggleWarp(p.dir)}
-              />
-              <span class="font-medium">{p.name}</span>
-              <span class="text-xs text-[var(--color-muted)]">
-                {p.conversations} conversation{p.conversations === 1 ? '' : 's'}
-              </span>
-            </label>
-          {/each}
-        </div>
-      </fieldset>
-      <button
-        class={runCls}
-        disabled={app.busy || app.warpSelected.length === 0}
-        onclick={() => app.importWarp($state.snapshot(app.warpSelected))}
-      >
-        Import {app.warpSelected.length} project{app.warpSelected.length === 1 ? '' : 's'}
-      </button>
-      {@render saveAsFeedRow('warp')}
-    {/if}
-  </section>
-
-  <!-- Résumé -->
-  <section class="space-y-2 border-t border-[var(--color-line)] pt-5">
-    <h2 class="text-sm font-semibold">Résumé (PDF/DOCX)</h2>
-    <p class="text-xs text-[var(--color-muted)]">
-      Turn a résumé or CV into a batch of dated candidates — roles, projects, education, and dated
-      wins — so you promote the real ones with one click each instead of retyping a career. Every
-      item carries the verbatim résumé span it came from, so you can see at a glance that nothing was
-      invented. Skills aren't imported here (they belong on your profile, not the timeline).
-    </p>
-    <p class="text-xs text-[var(--color-muted)]">
-      Unlike the other sources, this one needs an LLM to read the prose — there is no local fallback.
-      {#if app.llmConfig?.provider === 'anthropic'}
-        <span class="block text-amber-700 dark:text-amber-300">
-          The résumé text is sent to <strong>Anthropic</strong> to be parsed — content leaves your
-          machine. A résumé is designed to be handed to strangers, but the choice is yours.
-        </span>
-      {/if}
-    </p>
-    {#if !app.llmReady || !app.docsAvailable}
-      <p class="text-xs text-[var(--color-private)]">
-        {#if !app.docsAvailable}
-          Document reading isn't available in this build yet.
-        {:else}
-          Configure an AI provider in Data → AI provider first.
-        {/if}
-      </p>
-    {/if}
     <button
-      class={runCls}
-      disabled={app.busy || !app.llmReady || !app.docsAvailable}
-      onclick={() => app.importResume()}
+      class="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-[var(--color-line)] bg-[var(--color-paper)] px-3 py-1 text-xs text-[var(--color-muted)] hover:bg-gray-50 dark:hover:bg-white/5"
+      onclick={() => (showDefaults = !showDefaults)}
+      aria-expanded={showDefaults}
     >
-      Choose a résumé &amp; import…
+      <Icon name="tune" size={16} />
+      Defaults
     </button>
-  </section>
+  </div>
 
-  <!-- Last run -->
-  {#if app.lastImportReport}
-    {@const r = app.lastImportReport}
-    <section class="space-y-1 rounded-lg border border-[var(--color-line)] bg-gray-50 p-4 text-sm dark:bg-white/5">
-      <h2 class="text-sm font-semibold">Last import</h2>
-      <p class="text-[var(--color-muted)]">
-        Fetched {r.fetched} · <strong class="text-green-700 dark:text-green-300">staged {r.staged}</strong> ·
-        skipped {r.skippedPromoted} promoted, {r.skippedRejected} rejected
-        {#if r.errors.length}· <span class="text-amber-700 dark:text-amber-300">{r.errors.length} errors</span>{/if}
-      </p>
-      {#if r.staged > 0}
-        <p><a href="/inbox" class="text-[var(--color-accent)] hover:underline">Review {r.staged} candidate{r.staged === 1 ? '' : 's'} in the Inbox →</a></p>
-      {/if}
-      {#if r.errors.length}
-        <ul class="mt-1 list-disc pl-5 text-xs text-amber-700 dark:text-amber-300">
-          {#each r.errors.slice(0, 8) as err (err)}<li>{err}</li>{/each}
-          {#if r.errors.length > 8}<li>…and {r.errors.length - 8} more</li>{/if}
-        </ul>
-      {/if}
-    </section>
+  {#if showDefaults}
+    <div class="jv-rise mt-2 space-y-4 rounded-[11px] border border-[var(--color-line)] bg-[var(--color-bar)] p-4">
+      <div class="space-y-1.5">
+        <h3 class="text-sm font-semibold">Triage</h3>
+        <p class="text-xs text-[var(--color-muted)]">
+          A free, local prefilter always runs — it flags obvious noise (automated email, version-bump
+          PRs, routine chores) as <em>frivolous</em> so the inbox can surface real work first. It never
+          deletes anything; you still promote or reject every item yourself.
+        </p>
+        <label class="flex items-start gap-2 text-sm {app.llmReady ? '' : 'opacity-60'}">
+          <input
+            type="checkbox"
+            class="mt-0.5"
+            disabled={!app.llmReady}
+            bind:checked={app.importSettings.triage.useLlm}
+          />
+          <span>
+            Use LLM triage for ambiguous items
+            {#if app.llmConfig}(sends them to <strong>{app.llmConfig.provider}</strong>){/if}
+            {#if !app.llmReady}
+              <span class="text-[var(--color-muted)]">— configure a provider in Data → AI provider first</span>
+            {:else if app.llmConfig?.provider === 'anthropic'}
+              <span class="block text-xs text-amber-700 dark:text-amber-300">
+                Only items the prefilter can't decide are sent to Anthropic — content leaves your
+                machine. Gmail items are metadata-only (subject + 200-char snippet), so what could ever
+                leave is minimal.
+              </span>
+            {/if}
+          </span>
+        </label>
+      </div>
+      <div class="space-y-1.5 border-t border-[var(--color-line)] pt-4">
+        <h3 class="text-sm font-semibold">Stage to project</h3>
+        <p class="text-xs text-[var(--color-muted)]">
+          Pre-assign everything this import stages to a project (set it in the bar above). It only
+          pre-fills the
+          <a href="/inbox" class="text-[var(--color-accent)] hover:underline">Inbox</a> picker — you still
+          confirm (or change) the project when you promote each item, and a choice here overrides a
+          source's own guess (e.g. the GitHub repo).
+        </p>
+      </div>
+    </div>
   {/if}
+
+  <!-- Source groups (accordion) -->
+  {#each GROUPS as g (g.cat)}
+    <section class="mt-[22px]">
+      {@render groupHead(g.title, g.note)}
+      <div class="flex flex-col gap-2">
+        {#each SOURCES.filter((s) => s.cat === g.cat) as s (s.id)}
+          <div class={open.has(s.id)
+            ? 'overflow-hidden rounded-[13px] border border-[var(--color-accent)] bg-[var(--color-bar)] ring-1 ring-[var(--color-accent)]/25'
+            : 'overflow-hidden rounded-[13px] border border-[var(--color-line)] bg-[var(--color-bar)]'}>
+            {@render sourceHeader(s)}
+
+            {#if open.has(s.id)}
+              {#if s.id === 'github'}
+                {#snippet githubBody()}
+                  <p class="text-xs text-[var(--color-muted)]">
+                    Issues &amp; PRs you authored in a date range (Search API). A personal access token
+                    with <code>repo</code> read scope works.
+                  </p>
+                  {@render tokenRow('github', 'ghp_…')}
+                  <div class="flex flex-wrap items-end gap-2">
+                    <label class="flex flex-col text-xs text-[var(--color-muted)]">
+                      User (login)
+                      <input bind:value={app.importSettings.github.user} placeholder="octocat" class="{inputCls} w-40" />
+                    </label>
+                    <label class="flex flex-col text-xs text-[var(--color-muted)]">
+                      Repo (optional)
+                      <input bind:value={app.importSettings.github.repo} placeholder="owner/name" class="{inputCls} w-44" />
+                    </label>
+                    <label class="flex flex-col text-xs text-[var(--color-muted)]">
+                      Since
+                      <input type="date" bind:value={app.importSettings.github.since} class={inputCls} use:closeDatePicker />
+                    </label>
+                    <label class="flex flex-col text-xs text-[var(--color-muted)]">
+                      Until
+                      <input type="date" bind:value={app.importSettings.github.until} class={inputCls} use:closeDatePicker />
+                    </label>
+                    <label class="flex flex-col text-xs text-[var(--color-muted)]">
+                      Limit
+                      <input type="number" min="1" max="300" bind:value={app.importSettings.github.limit} class="{inputCls} w-20" />
+                    </label>
+                  </div>
+                  <div class="flex flex-wrap items-end gap-4">
+                    <label class="flex items-center gap-2 text-xs text-[var(--color-muted)]">
+                      <input type="checkbox" bind:checked={app.importSettings.github.importPrivate} />
+                      Mark imported entries private
+                    </label>
+                    <label class="flex items-center gap-2 text-xs text-[var(--color-muted)]">
+                      <input type="checkbox" bind:checked={app.importSettings.github.fetchDiscussion} />
+                      Fetch PR/issue discussion
+                    </label>
+                    {#if app.importSettings.github.fetchDiscussion}
+                      <label class="flex flex-col text-xs text-[var(--color-muted)]">
+                        Comments
+                        <select bind:value={app.importSettings.github.commentScope} class={inputCls}>
+                          <option value="self">My comments</option>
+                          <option value="all">Everyone's</option>
+                        </select>
+                      </label>
+                      <label class="flex flex-col text-xs text-[var(--color-muted)]">
+                        Discussion char cap
+                        <input
+                          type="number"
+                          min="1"
+                          placeholder="2000"
+                          bind:value={app.importSettings.github.discussionCharCap}
+                          class="{inputCls} w-24"
+                        />
+                      </label>
+                    {/if}
+                  </div>
+                  <div class="flex flex-wrap items-center gap-2 border-t border-dashed border-[var(--color-line)] pt-3">
+                    <button class={runCls} disabled={app.busy || !app.importSettings.github.user.trim()} onclick={runGithub}>
+                      <Icon name="sync" size={17} />
+                      Run GitHub import
+                    </button>
+                  </div>
+                  {@render saveAsFeedRow('github')}
+                {/snippet}
+                {@render bodyOpen(githubBody)}
+              {:else if s.id === 'asana'}
+                {#snippet asanaBody()}
+                  <p class="text-xs text-[var(--color-muted)]">
+                    Every task you've worked on — created, commented, assigned, or @mentioned — even ones
+                    since reassigned to a reviewer (the durable signal is collaborator membership, not the
+                    current assignee). Premium accounts use workspace search; others fall back to project
+                    enumeration automatically. Completed tasks are included by default for reconstruction.
+                  </p>
+                  {@render tokenRow('asana', 'personal access token')}
+                  <div class="flex flex-wrap items-end gap-2">
+                    <label class="flex flex-col text-xs text-[var(--color-muted)]">
+                      Workspace gid (optional)
+                      <input bind:value={app.importSettings.asana.workspace} placeholder="first workspace" class="{inputCls} w-44" />
+                    </label>
+                    <label class="flex flex-col text-xs text-[var(--color-muted)]">
+                      Project
+                      <select bind:value={app.importSettings.asana.project} class="{inputCls} w-56">
+                        <option value="">— all projects in workspace —</option>
+                        {#each app.asanaProjects as p (p.gid)}
+                          <option value={p.gid}>{p.name}</option>
+                        {/each}
+                        {#if app.importSettings.asana.project && !app.asanaProjects.some((p) => p.gid === app.importSettings.asana.project)}
+                          <option value={app.importSettings.asana.project}>{app.importSettings.asana.project}</option>
+                        {/if}
+                      </select>
+                    </label>
+                    <button class={btnCls} disabled={app.busy || !app.tokenPresent.asana} onclick={() => app.loadAsanaProjects()}>
+                      Load projects
+                    </button>
+                    <label class="flex flex-col text-xs text-[var(--color-muted)]">
+                      Since
+                      <input type="date" bind:value={app.importSettings.asana.since} class="{inputCls} w-40" />
+                    </label>
+                    <label class="flex flex-col text-xs text-[var(--color-muted)]">
+                      Until
+                      <input type="date" bind:value={app.importSettings.asana.until} class="{inputCls} w-40" />
+                    </label>
+                    <label class="flex flex-col text-xs text-[var(--color-muted)]">
+                      Limit
+                      <input type="number" min="1" max="500" bind:value={app.importSettings.asana.limit} class="{inputCls} w-20" />
+                    </label>
+                    <label class="flex items-center gap-1.5 text-xs text-[var(--color-muted)]">
+                      <input type="checkbox" bind:checked={app.importSettings.asana.includeCompleted} />
+                      Include completed
+                    </label>
+                  </div>
+                  <div class="flex flex-wrap items-center gap-2 border-t border-dashed border-[var(--color-line)] pt-3">
+                    <button class={runCls} disabled={app.busy} onclick={runAsana}>
+                      <Icon name="sync" size={17} />
+                      Run Asana import
+                    </button>
+                  </div>
+                  {@render saveAsFeedRow('asana')}
+                {/snippet}
+                {@render bodyOpen(asanaBody)}
+              {:else if s.id === 'gmail'}
+                {#snippet gmailBody()}
+                  <p class="text-xs text-[var(--color-muted)]">
+                    Metadata only — subjects &amp; snippets, never message bodies. Needs a Gmail
+                    <code>readonly</code> OAuth access token. The query is the selection, e.g.
+                    <code>in:sent after:2019/01/01 before:2020/01/01</code>.
+                  </p>
+                  {@render tokenRow('gmail', 'OAuth access token (ya29.…)')}
+                  <div class="flex flex-wrap items-end gap-2">
+                    <label class="flex flex-1 flex-col text-xs text-[var(--color-muted)]">
+                      Search query
+                      <input bind:value={app.importSettings.gmail.query} placeholder="in:sent after:2019/01/01 before:2020/01/01" class="{inputCls} w-full" />
+                    </label>
+                    <label class="flex flex-col text-xs text-[var(--color-muted)]">
+                      Limit
+                      <input type="number" min="1" max="100" bind:value={app.importSettings.gmail.limit} class="{inputCls} w-20" />
+                    </label>
+                  </div>
+                  <div class="flex flex-wrap items-center gap-2 border-t border-dashed border-[var(--color-line)] pt-3">
+                    <button class={runCls} disabled={app.busy || !app.importSettings.gmail.query.trim()} onclick={runGmail}>
+                      <Icon name="sync" size={17} />
+                      Run Gmail import
+                    </button>
+                  </div>
+                  {@render saveAsFeedRow('gmail')}
+                {/snippet}
+                {@render bodyOpen(gmailBody)}
+              {:else if s.id === 'claude-code'}
+                {#snippet claudeBody()}
+                  <p class="text-xs text-[var(--color-muted)]">
+                    Zero-auth, import-only. Reads your local Claude Code session logs from
+                    <code>~/.claude/projects/</code> and stages one candidate per session — your questions
+                    are a timestamped diary of what you were trying to do, pre-anchored to a project. One
+                    session = one candidate; only your genuine typed turns become the body (assistant prose
+                    is excluded).
+                  </p>
+                  <p class="flex items-start gap-1.5 text-xs text-[var(--color-private)]">
+                    <span class="flex-none pt-px"><Icon name="lock" size={14} /></span>
+                    <span>
+                      Most sensitive source here, so it never touches the cloud: you pick which projects to
+                      import, a local prefilter runs (no LLM triage), and every candidate is private by
+                      default until you promote it.
+                    </span>
+                  </p>
+                  <button class={btnCls} disabled={app.busy} onclick={() => app.loadClaudeCodeProjects()}>
+                    {app.claudeCodeProjects.length ? 'Rescan projects' : 'Find projects'}
+                  </button>
+                  {#if app.claudeCodeProjects.length > 0}
+                    <fieldset class="space-y-1 rounded border border-[var(--color-line)] p-3">
+                      <legend class="flex items-center gap-3 px-1 text-xs text-[var(--color-muted)]">
+                        <span>{app.claudeCodeSelected.length} of {app.claudeCodeProjects.length} selected</span>
+                        <button class="text-[var(--color-accent)] hover:underline" onclick={() => (app.claudeCodeSelected = app.claudeCodeProjects.map((p) => p.root))}>
+                          all
+                        </button>
+                        <button class="text-[var(--color-muted)] hover:underline" onclick={() => (app.claudeCodeSelected = [])}>
+                          none
+                        </button>
+                      </legend>
+                      <div class="max-h-56 space-y-1 overflow-y-auto">
+                        {#each app.claudeCodeProjects as p (p.root)}
+                          <label class="flex items-center gap-2 text-sm" title={p.root}>
+                            <input
+                              type="checkbox"
+                              checked={app.claudeCodeSelected.includes(p.root)}
+                              onchange={() => toggleClaudeCode(p.root)}
+                            />
+                            <span class="font-medium">{p.name}</span>
+                            <span class="text-xs text-[var(--color-muted)]">
+                              {p.sessions} session{p.sessions === 1 ? '' : 's'}
+                            </span>
+                          </label>
+                        {/each}
+                      </div>
+                    </fieldset>
+                    <div class="flex flex-wrap items-center gap-2 border-t border-dashed border-[var(--color-line)] pt-3">
+                      <button
+                        class={runCls}
+                        disabled={app.busy || app.claudeCodeSelected.length === 0}
+                        onclick={() => app.importClaudeCode($state.snapshot(app.claudeCodeSelected))}
+                      >
+                        <Icon name="download" size={17} />
+                        Import {app.claudeCodeSelected.length} project{app.claudeCodeSelected.length === 1 ? '' : 's'}
+                      </button>
+                    </div>
+                    {@render saveAsFeedRow('claude-code')}
+                  {/if}
+                {/snippet}
+                {@render bodyOpen(claudeBody)}
+              {:else if s.id === 'warp'}
+                {#snippet warpBody()}
+                  <p class="text-xs text-[var(--color-muted)]">
+                    Zero-auth, import-only. Reads your local Warp Agent-mode history from
+                    <code>warp.sqlite</code> and stages one candidate per conversation — your prompts are a
+                    timestamped diary of what you were trying to do, pre-anchored to a project by its working
+                    directory. One conversation = one candidate; only your typed prompts become the body
+                    (Warp keeps the assistant's replies in the cloud, so they're never imported).
+                  </p>
+                  <p class="flex items-start gap-1.5 text-xs text-[var(--color-private)]">
+                    <span class="flex-none pt-px"><Icon name="lock" size={14} /></span>
+                    <span>
+                      Most sensitive source here, so it never touches the cloud: you pick which projects to
+                      import, a local prefilter runs (no LLM triage), and every candidate is private by
+                      default until you promote it. Warp's database is opened read-only.
+                    </span>
+                  </p>
+                  <button class={btnCls} disabled={app.busy} onclick={() => app.loadWarpProjects()}>
+                    {app.warpProjects.length ? 'Rescan projects' : 'Find projects'}
+                  </button>
+                  {#if app.warpProjects.length > 0}
+                    <fieldset class="space-y-1 rounded border border-[var(--color-line)] p-3">
+                      <legend class="flex items-center gap-3 px-1 text-xs text-[var(--color-muted)]">
+                        <span>{app.warpSelected.length} of {app.warpProjects.length} selected</span>
+                        <button class="text-[var(--color-accent)] hover:underline" onclick={() => (app.warpSelected = app.warpProjects.map((p) => p.dir))}>
+                          all
+                        </button>
+                        <button class="text-[var(--color-muted)] hover:underline" onclick={() => (app.warpSelected = [])}>
+                          none
+                        </button>
+                      </legend>
+                      <div class="max-h-56 space-y-1 overflow-y-auto">
+                        {#each app.warpProjects as p (p.dir)}
+                          <label class="flex items-center gap-2 text-sm" title={p.dir}>
+                            <input
+                              type="checkbox"
+                              checked={app.warpSelected.includes(p.dir)}
+                              onchange={() => toggleWarp(p.dir)}
+                            />
+                            <span class="font-medium">{p.name}</span>
+                            <span class="text-xs text-[var(--color-muted)]">
+                              {p.conversations} conversation{p.conversations === 1 ? '' : 's'}
+                            </span>
+                          </label>
+                        {/each}
+                      </div>
+                    </fieldset>
+                    <div class="flex flex-wrap items-center gap-2 border-t border-dashed border-[var(--color-line)] pt-3">
+                      <button
+                        class={runCls}
+                        disabled={app.busy || app.warpSelected.length === 0}
+                        onclick={() => app.importWarp($state.snapshot(app.warpSelected))}
+                      >
+                        <Icon name="download" size={17} />
+                        Import {app.warpSelected.length} project{app.warpSelected.length === 1 ? '' : 's'}
+                      </button>
+                    </div>
+                    {@render saveAsFeedRow('warp')}
+                  {/if}
+                {/snippet}
+                {@render bodyOpen(warpBody)}
+              {:else if s.id === 'linkedin'}
+                {#snippet linkedinBody()}
+                  <p class="text-xs text-[var(--color-muted)]">
+                    Import-only — LinkedIn has no usable live API. Request your data export (Settings → Data
+                    privacy → Get a copy of your data), unzip it, and select the CSVs. Recognized:
+                    <code>Positions.csv</code>, <code>Projects.csv</code>, <code>Education.csv</code>.
+                  </p>
+                  <div class="flex flex-wrap items-center gap-2 border-t border-dashed border-[var(--color-line)] pt-3">
+                    <button class={runCls} disabled={app.busy} onclick={() => app.importLinkedin()}>
+                      <Icon name="upload_file" size={17} />
+                      Choose CSVs &amp; import…
+                    </button>
+                  </div>
+                {/snippet}
+                {@render bodyOpen(linkedinBody)}
+              {:else if s.id === 'resume'}
+                {#snippet resumeBody()}
+                  <p class="text-xs text-[var(--color-muted)]">
+                    Turn a résumé or CV into a batch of dated candidates — roles, projects, education, and
+                    dated wins — so you promote the real ones with one click each instead of retyping a
+                    career. Every item carries the verbatim résumé span it came from, so you can see at a
+                    glance that nothing was invented. Skills aren't imported here (they belong on your
+                    profile, not the timeline).
+                  </p>
+                  <p class="text-xs text-[var(--color-muted)]">
+                    Unlike the other sources, this one needs an LLM to read the prose — there is no local
+                    fallback.
+                    {#if app.llmConfig?.provider === 'anthropic'}
+                      <span class="block text-amber-700 dark:text-amber-300">
+                        The résumé text is sent to <strong>Anthropic</strong> to be parsed — content leaves
+                        your machine. A résumé is designed to be handed to strangers, but the choice is
+                        yours.
+                      </span>
+                    {/if}
+                  </p>
+                  {#if !app.llmReady || !app.docsAvailable}
+                    <p class="flex items-start gap-1.5 text-xs text-[var(--color-private)]">
+                      <span class="flex-none pt-px"><Icon name="info" size={15} /></span>
+                      <span>
+                        {#if !app.docsAvailable}
+                          Document reading isn't available in this build yet.
+                        {:else}
+                          Configure an AI provider in Data → AI provider first.
+                        {/if}
+                      </span>
+                    </p>
+                  {/if}
+                  <div class="flex flex-wrap items-center gap-2 border-t border-dashed border-[var(--color-line)] pt-3">
+                    <button
+                      class={runCls}
+                      disabled={app.busy || !app.llmReady || !app.docsAvailable}
+                      onclick={() => app.importResume()}
+                    >
+                      <Icon name="upload_file" size={17} />
+                      Choose a résumé &amp; import…
+                    </button>
+                  </div>
+                {/snippet}
+                {@render bodyOpen(resumeBody)}
+              {/if}
+            {/if}
+          </div>
+        {/each}
+      </div>
+    </section>
+  {/each}
 </div>
