@@ -14,7 +14,7 @@ export {
   type RawItem,
   type IngestReport
 } from './types';
-export { getJson, postJson, bearer } from './http';
+export { getJson, postJson, getText, bearer, type FetchedText } from './http';
 export {
   apiBase,
   graphqlUrl,
@@ -60,14 +60,35 @@ export {
   RESUME_TYPES,
   RESUME_TOKEN_BUDGET,
   buildResumePrompt,
+  EXTRACTION_SCHEMA_NOTE,
   parseResumeItems,
   chunkResumeText,
   parseResume,
   type ResumeType,
   type ResumeItem,
+  type ExtractParseOpts,
   type ParseResumeOpts,
   type ParseResumeResult
 } from './resume';
+export {
+  WEBSITE_SOURCE,
+  WEBSITE_MAX_PAGES,
+  WEBSITE_MIN_TEXT,
+  resolvePages,
+  extractPage,
+  harvestIdentities,
+  acquireWebsite,
+  websiteSourceId,
+  buildWebsitePrompt,
+  parseWebsite,
+  type PageStructured,
+  type ExtractedPage,
+  type FetchedPage,
+  type ResolveInput,
+  type WebsiteFetchOpts,
+  type AcquireResult,
+  type ParseWebsiteResult
+} from './website';
 export {
   mapClaudeCodeSession,
   importClaudeCodeSessions,

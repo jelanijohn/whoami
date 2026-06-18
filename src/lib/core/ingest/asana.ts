@@ -13,11 +13,11 @@
  * handoff. It slightly over-captures (an FYI follower), which is the safe
  * direction — every candidate stages private and the human rejects noise.
  *
- * VERIFICATION GATE (spec §2): "a prior assignee is retained as a follower
- * after reassignment" is the load-bearing assumption. It has NOT yet been
- * confirmed against a real reassigned task (needs a live token); confirm with
- * `opt_fields=followers.gid,assignee.gid` before relying on this for a full
- * reconstruction.
+ * VERIFICATION (spec §2): "a prior assignee is retained as a follower after
+ * reassignment" is the load-bearing assumption — **confirmed true (2026-06-18)**
+ * against a real reassigned task (`opt_fields=followers.gid,assignee.gid`):
+ * reassignment overwrites `assignee` but leaves the prior assignee in
+ * `followers`, so `me ∈ followers` survives handoff as designed.
  *
  * Two fetch strategies, auto-selected by account tier:
  *   - Premium: workspace search (`/workspaces/{gid}/tasks/search`) with

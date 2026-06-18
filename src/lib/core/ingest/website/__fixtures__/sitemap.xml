@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://jane.example/</loc></url>
+  <url><loc>https://jane.example/about</loc></url>
+  <url><loc>https://jane.example/projects?tag=open&amp;sort=date</loc></url>
+  <url><loc>https://jane.example/photo.jpg</loc></url>
+  <url><loc>https://evil.example/phishing</loc></url>
+</urlset>

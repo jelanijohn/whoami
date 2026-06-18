@@ -8,7 +8,7 @@
  */
 
 export { RESUME_SOURCE, RESUME_TYPES, type ResumeType, type ResumeItem } from './types';
-export { buildResumePrompt } from './prompts';
-export { parseResumeItems } from './parse';
+export { buildResumePrompt, EXTRACTION_SCHEMA_NOTE } from './prompts';
+export { parseResumeItems, type ExtractParseOpts } from './parse';
 export { chunkResumeText, RESUME_TOKEN_BUDGET } from './chunk';
 export { parseResume, type ParseResumeOpts, type ParseResumeResult } from './pipeline';

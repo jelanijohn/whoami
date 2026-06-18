@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capabilities for Who Am I: draw our own window chrome (drag, minimize, maximize, close), read/write the record under $HOME, run the derived SQLite index, read another app's local DB read-only for history import (e.g. Warp under a mounted Windows drive on WSL), shell out to git for Sync, and pick a folder.",
+  "description": "Capabilities for Who Am I: draw our own window chrome (drag, minimize, maximize, close), read/write the record under $HOME, run the derived SQLite index, read another app's local DB read-only for history import (e.g. Warp under a mounted Windows drive on WSL), shell out to git for Sync, fetch public web pages the user enters for website import, and pick a folder.",
   "windows": ["main"],
   "permissions": [
     "core:default",
@@ -45,7 +45,9 @@
         { "url": "https://app.asana.com/*" },
         { "url": "https://gmail.googleapis.com/*" },
         { "url": "http://localhost:*/*" },
-        { "url": "http://127.0.0.1:*/*" }
+        { "url": "http://127.0.0.1:*/*" },
+        { "url": "https://*/*" },
+        { "url": "http://*/*" }
       ]
     }
   ]

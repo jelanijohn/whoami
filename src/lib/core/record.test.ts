@@ -484,11 +484,34 @@ describe('reduce pipeline (plan §4)', () => {
     for (const id of allEvidence) expect(validIds.has(id)).toBe(true);
     expect(allEvidence).not.toContain(GHOST_ULID);
 
-    // At least one map call + one reduce call.
-    expect(calls.length).toBeGreaterThanOrEqual(2);
+    // Two entries fit one chunk, so the single-chunk short-circuit (TODO §3.5)
+    // skips the reduce pass: exactly one map call, no reduce call.
+    expect(calls.length).toBe(1);
     // It's a proposal: nothing is written to disk yet.
     const onDisk = await readFile(join(root, project.path!), 'utf8');
     expect(onDisk).not.toContain('whoami:reduce');
+  });
+
+  it('runs the reduce pass when entries span multiple chunks (TODO §3.5)', async () => {
+    await store.createEntry({
+      type: 'project',
+      title: 'Multi',
+      extra: { slug: 'multi' },
+      body: 'Notes.'
+    });
+    await store.createEntry({ type: 'win', title: 'a', date: '2024-01-01', extra: { project: 'multi' } });
+    await store.createEntry({ type: 'win', title: 'b', date: '2024-02-01', extra: { project: 'multi' } });
+
+    const { llm, calls } = fakeReduceLlm();
+    // A tiny per-chunk budget forces one entry per chunk → 2 map calls + 1 reduce.
+    const proposal = await store.reduceProject(llm, 'multi', { tokenBudget: 1, now: '2026-06-10' });
+
+    const reduceCalls = calls.filter((c) => c.user.includes('MAP_OUTPUTS'));
+    const mapCalls = calls.filter((c) => !c.user.includes('MAP_OUTPUTS'));
+    expect(mapCalls.length).toBeGreaterThanOrEqual(2);
+    expect(reduceCalls.length).toBe(1);
+    // The reduce pass still produces verifiable facts.
+    expect(proposal.retro.worked_on.length).toBeGreaterThan(0);
   });
 
   it('save writes the region, preserves prose, and re-running regenerates in place', async () => {

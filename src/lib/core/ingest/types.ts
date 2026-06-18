@@ -14,7 +14,15 @@
  * MUST wrap them in fenced data blocks with an explicit do-not-follow guard.
  */
 
-export type IngestSource = 'github' | 'asana' | 'gmail' | 'linkedin' | 'resume' | 'claude-code' | 'warp';
+export type IngestSource =
+  | 'github'
+  | 'asana'
+  | 'gmail'
+  | 'linkedin'
+  | 'resume'
+  | 'claude-code'
+  | 'warp'
+  | 'website';
 
 /** A normalized item from any provider — the common shape every `map*`
  * function produces (waid's `IntegrationItem`, adapted for a historical

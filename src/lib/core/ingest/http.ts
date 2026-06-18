@@ -58,3 +58,43 @@ export async function postJson(
 export function bearer(token: string, extra: Record<string, string> = {}): Record<string, string> {
   return { Authorization: `Bearer ${token}`, Accept: 'application/json', ...extra };
 }
+
+/** The buffered result of a {@link getText} fetch (website-import spec §3.1). */
+export interface FetchedText {
+  /** The final URL after redirects, when the seam surfaces it; otherwise the
+   * requested URL (the {@link HttpResponse} contract buffers but does not expose
+   * `fetch`'s post-redirect `url`, so this is best-effort). */
+  finalUrl: string;
+  status: number;
+  contentType: string;
+  text: string;
+}
+
+/**
+ * A text-returning sibling of {@link getJson} for the website importer
+ * (website-import spec §3.1): it does NOT JSON-parse — it returns the raw body,
+ * its content-type, and the final URL. Same provider-labelled error handling;
+ * a non-2xx throws so the per-page caller in `acquire.ts` can record it and
+ * carry on (one bad page never aborts the run).
+ *
+ * Sends a descriptive User-Agent and an HTML Accept header. Redirect-following
+ * happens inside the `Http` seam (node/webview `fetch` both follow by default).
+ */
+export async function getText(http: Http, url: string, provider: string): Promise<FetchedText> {
+  const resp = await http.request({
+    url,
+    method: 'GET',
+    headers: {
+      'User-Agent': 'whoami-import/0.1',
+      Accept: 'text/html,application/xhtml+xml'
+    }
+  });
+  if (!resp.ok) {
+    throw new Error(`${provider} returned ${resp.status}`);
+  }
+  // Headers may be cased either way depending on the seam impl; check both.
+  const contentType = resp.headers['content-type'] ?? resp.headers['Content-Type'] ?? '';
+  const finalUrl =
+    resp.headers['content-location'] ?? resp.headers['Content-Location'] ?? url;
+  return { finalUrl, status: resp.status, contentType, text: resp.text };
+}

@@ -3,6 +3,7 @@
   import { isPickerKind } from '$lib/core';
   import { closeDatePicker } from '$lib/actions/closeDatePicker';
   import CredentialHelp from '$lib/components/CredentialHelp.svelte';
+  import IdentityMergeReview from '$lib/components/IdentityMergeReview.svelte';
   import Icon from '$lib/components/Icon.svelte';
 
   // Transient token-entry boxes (the saved value lives in the keyring, never here).
@@ -107,6 +108,26 @@
     await app.importGmail({ query: m.query.trim(), limit: m.limit || undefined });
   }
 
+  async function runWebsite() {
+    persist();
+    const w = app.importSettings.website;
+    const urls = w.urls
+      .split('\n')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const maxStr = String(w.maxPages).trim();
+    const maxPages = maxStr ? Number(maxStr) : undefined;
+    await app.importWebsite({
+      urls,
+      sitemapUrl: w.sitemapUrl.trim() || undefined,
+      maxPages: maxPages && Number.isFinite(maxPages) && maxPages > 0 ? maxPages : undefined
+    });
+  }
+  /** True when the website form has nothing to fetch (no URLs and no sitemap). */
+  const websiteEmpty = $derived(
+    !app.importSettings.website.urls.trim() && !app.importSettings.website.sitemapUrl.trim()
+  );
+
   /** Toggle one Claude Code project root in/out of the import selection. */
   function toggleClaudeCode(root: string) {
     const sel = app.claudeCodeSelected;
@@ -137,7 +158,8 @@
     { id: 'claude-code', name: 'Claude Code', glyph: 'terminal', sub: 'Session history · ~/.claude/projects', cat: 'local' },
     { id: 'warp', name: 'Warp', glyph: 'bolt', sub: 'Agent-mode history · warp.sqlite', cat: 'local' },
     { id: 'linkedin', name: 'LinkedIn', glyph: 'work', sub: 'CSV data export', cat: 'archive' },
-    { id: 'resume', name: 'Résumé', glyph: 'description', sub: 'PDF / DOCX', cat: 'archive' }
+    { id: 'resume', name: 'Résumé', glyph: 'description', sub: 'PDF / DOCX', cat: 'archive' },
+    { id: 'website', name: 'Website (your own)', glyph: 'language', sub: 'Public pages · sitemap or URLs', cat: 'archive' }
   ];
   const GROUPS: { cat: Cat; title: string; note: string }[] = [
     { cat: 'connected', title: 'Connected services', note: 'Live APIs · token in OS keyring' },
@@ -150,6 +172,7 @@
     if (id === 'github' || id === 'asana' || id === 'gmail')
       return app.tokenPresent[id] ? 'ok' : 'warn';
     if (id === 'resume') return app.llmReady && app.docsAvailable ? 'ok' : 'warn';
+    if (id === 'website') return app.llmReady ? 'ok' : 'warn';
     if (id === 'linkedin') return 'neutral';
     return 'ok'; // claude-code / warp — zero-auth, always ready
   }
@@ -929,6 +952,86 @@
                   </div>
                 {/snippet}
                 {@render bodyOpen(resumeBody)}
+              {:else if s.id === 'website'}
+                {#snippet websiteBody()}
+                  <p class="text-xs text-[var(--color-muted)]">
+                    Pull the dated spine — roles, projects, education, wins — out of your own personal
+                    site so you promote the real ones with one click each. These candidates are
+                    <em>polished-derived</em>: a website is an outward-facing artifact, so treat each one
+                    as a prompt to write the rawer, more accurate truth underneath. Every item carries the
+                    verbatim page span it came from, and lands private until you promote it.
+                  </p>
+                  <p class="text-xs text-[var(--color-muted)]">
+                    Like Résumé, this one needs an LLM to read the prose — there is no local fallback.
+                    {#if app.llmConfig?.provider === 'anthropic'}
+                      <span class="block text-amber-700 dark:text-amber-300">
+                        The fetched page text is sent to <strong>Anthropic</strong> to be structured —
+                        content leaves your machine. These are your own public pages, but the choice is
+                        yours.
+                      </span>
+                    {/if}
+                  </p>
+                  <p class="flex items-start gap-1.5 text-xs text-[var(--color-muted)]">
+                    <span class="flex-none pt-px"><Icon name="info" size={15} /></span>
+                    <span>
+                      Not a crawler: it fetches only the URLs you enter (and a sitemap you point at),
+                      server-rendered public pages only — no login, no following links it finds, no
+                      JavaScript-rendered apps.
+                    </span>
+                  </p>
+                  {#if !app.llmReady}
+                    <p class="flex items-start gap-1.5 text-xs text-[var(--color-private)]">
+                      <span class="flex-none pt-px"><Icon name="info" size={15} /></span>
+                      <span>Configure an AI provider in Data → AI provider first.</span>
+                    </p>
+                  {/if}
+                  <div class="flex flex-col gap-2">
+                    <label class="flex flex-col text-xs text-[var(--color-muted)]">
+                      Page URLs (one per line)
+                      <textarea
+                        bind:value={app.importSettings.website.urls}
+                        rows="3"
+                        placeholder={'https://you.example/about\nhttps://you.example/projects'}
+                        class="{inputCls} w-full font-mono"
+                      ></textarea>
+                    </label>
+                    <div class="flex flex-wrap items-end gap-2">
+                      <label class="flex flex-1 flex-col text-xs text-[var(--color-muted)]">
+                        Sitemap URL (optional)
+                        <input
+                          bind:value={app.importSettings.website.sitemapUrl}
+                          placeholder="https://you.example/sitemap.xml"
+                          class="{inputCls} w-full"
+                        />
+                      </label>
+                      <label class="flex flex-col text-xs text-[var(--color-muted)]">
+                        Max pages
+                        <input
+                          type="number"
+                          min="1"
+                          max="100"
+                          bind:value={app.importSettings.website.maxPages}
+                          class="{inputCls} w-24"
+                        />
+                      </label>
+                    </div>
+                  </div>
+                  <div class="flex flex-wrap items-center gap-2 border-t border-dashed border-[var(--color-line)] pt-3">
+                    <button
+                      class={runCls}
+                      disabled={app.busy || !app.llmReady || websiteEmpty}
+                      onclick={runWebsite}
+                    >
+                      <Icon name="sync" size={17} />
+                      Run website import
+                    </button>
+                  </div>
+                  {#if app.pendingIdentityProposal}
+                    <IdentityMergeReview proposal={app.pendingIdentityProposal} />
+                  {/if}
+                  {@render saveAsFeedRow('website')}
+                {/snippet}
+                {@render bodyOpen(websiteBody)}
               {/if}
             {/if}
           </div>

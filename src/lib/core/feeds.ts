@@ -15,7 +15,7 @@ import type { IngestReport, IngestSource } from './ingest/types';
 /** The ingest sources that can be saved as a feed. LinkedIn and Résumé are
  * inherently interactive file-dialog imports and do not participate (spec §11);
  * this is the {@link IngestSource} subset feeds use. */
-export type FeedKind = 'github' | 'asana' | 'gmail' | 'claude-code' | 'warp';
+export type FeedKind = 'github' | 'asana' | 'gmail' | 'claude-code' | 'warp' | 'website';
 
 /** The two local picker sources. They are ALWAYS prefilter-only + private
  * (spec §5.2): the chat-history sensitivity rule is not overridable per feed. */

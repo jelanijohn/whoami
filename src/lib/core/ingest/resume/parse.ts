@@ -23,6 +23,21 @@ import { RESUME_SOURCE, RESUME_TYPES, type ResumeItem, type ResumeType } from '.
 
 const RESUME_TYPE_SET = new Set<string>(RESUME_TYPES);
 
+/**
+ * Optional overrides that let a sibling front-end (the website importer,
+ * website-import spec §2.3.1) reuse this exact validate/evidence/date path with
+ * its own `source`, `suggestedTags`, and `sourceId` scheme. Omitted entirely ⇒
+ * byte-for-byte résumé behavior, so the existing call site is unchanged.
+ */
+export interface ExtractParseOpts {
+  /** The `RawItem.source` to stamp (default {@link RESUME_SOURCE}). */
+  source?: string;
+  /** The single `suggestedTags` entry (default `'resume'`). */
+  tag?: string;
+  /** Deterministic id from the item's identity (default {@link resumeSourceId}). */
+  makeSourceId?: (item: ResumeItem, start: string) => string;
+}
+
 /** Collapse all whitespace runs to single spaces — résumé text often re-flows
  * when extracted from columns, so the evidence filter must be whitespace-
  * tolerant while staying a strict substring match (spec §5 step 3). */
@@ -88,8 +103,12 @@ function resumeSourceId(item: ResumeItem, start: string): string {
 }
 
 /** Map a validated, dated item onto a `RawItem` (spec §2 table). `start` is the
- * already-normalized YYYY-MM-DD date. */
-function mapItem(item: ResumeItem, start: string): RawItem {
+ * already-normalized YYYY-MM-DD date. `opts` lets a sibling front-end (website)
+ * stamp its own source/tag/sourceId; absent ⇒ résumé defaults. */
+function mapItem(item: ResumeItem, start: string, opts: ExtractParseOpts = {}): RawItem {
+  const source = opts.source ?? RESUME_SOURCE;
+  const tag = opts.tag ?? 'resume';
+  const makeSourceId = opts.makeSourceId ?? resumeSourceId;
   const end = normalizeEnd(item.end);
   const base = item.type === 'role' ? (item.role ?? item.title) : item.title;
   // role/education titles read like a LinkedIn-sourced candidate: "X — Org".
@@ -104,13 +123,13 @@ function mapItem(item: ResumeItem, start: string): RawItem {
   if (end) extra.end = end;
 
   const out: RawItem = {
-    source: RESUME_SOURCE,
-    sourceId: resumeSourceId(item, start),
+    source,
+    sourceId: makeSourceId(item, start),
     title,
     date: start,
     body: item.excerpt, // the verbatim span — the human's at-a-glance check
     suggestedType: item.type,
-    suggestedTags: ['resume'],
+    suggestedTags: [tag],
     extraFrontmatter: extra,
     meta: item.location ? { location: item.location } : {}
   };
@@ -127,7 +146,8 @@ function mapItem(item: ResumeItem, start: string): RawItem {
 export function parseResumeItems(
   raw: string,
   sourceText: string,
-  errors: string[] = []
+  errors: string[] = [],
+  opts: ExtractParseOpts = {}
 ): RawItem[] {
   let data: unknown;
   try {
@@ -161,7 +181,7 @@ export function parseResumeItems(
       continue;
     }
 
-    out.push(mapItem(item, start));
+    out.push(mapItem(item, start, opts));
   }
   return out;
 }

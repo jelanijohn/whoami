@@ -33,12 +33,14 @@ src/lib/core/        Framework-agnostic TypeScript core (no Tauri, no browser).
   ids.ts               ULID identity + collision-proof filename construction.
   frontmatter.ts       YAML parse/serialize, preserving unknown keys.
   entry.ts / profile.ts  Read–write round-trip for the record files.
+  profile-merge.ts     Pure propose→merge for identity links (review-gated).
   index-db.ts          The derived SQLite index: incremental + full rebuild.
   record.ts            RecordStore facade — write-text-first CRUD.
   git.ts               Explicit Sync (pull --rebase / add / commit / push).
   feeds.ts             Saved, re-runnable import configs (machine-local) + refresh.
   ingest/              Provider adapters (GitHub, Asana, Gmail, LinkedIn,
-                         résumé, Claude Code, Warp) → candidates in the inbox.
+                         résumé, your own website, Claude Code, Warp) →
+                         candidates in the inbox.
   triage/              Prefilter + optional LLM pass: a keep|frivolous sort
                          signal; never deletes or auto-rejects.
   reduce/              Optional LLM map/reduce: roll a noisy inbox into drafts.
@@ -51,7 +53,8 @@ src/lib/{appearance,theme}.svelte.ts  Appearance + theme (dark mode) preferences
 src/lib/journal/      Pure helpers for the Journal views: grouping, date
                         formatting, and the type/project color palette.
 src/lib/components/   Titlebar, AppMenu, entry/candidate cards, editor, the
-                        credential-setup help popups, and the Journal views
+                        credential-setup help popups, the identity merge-review
+                        panel, and the Journal views
                         (Grouped · Timeline · Calendar · Table).
 src/routes/          SvelteKit SPA: Journal · Import · Inbox · Projects ·
                        Profile · Resume · Personal site · Data.
@@ -80,16 +83,19 @@ sources and help you shape it — but **nothing reaches the record without your
 explicit promote.**
 
 - **Ingest** (`src/lib/core/ingest/`) — adapters for GitHub, Asana, Gmail,
-  LinkedIn, an imported résumé, and your Claude Code and Warp AI history map
-  provider data into normalized items, landing them as *candidates in a review
-  inbox* (never the record). Mappers are pure and fixture-tested; the layer never
-  touches the record, secrets, or the index directly.
+  LinkedIn, an imported résumé, your own personal website, and your Claude Code
+  and Warp AI history map provider data into normalized items, landing them as
+  *candidates in a review inbox* (never the record). Mappers are pure and
+  fixture-tested; the layer never touches the record, secrets, or the index
+  directly. The website importer fetches only the pages you enter (and a sitemap
+  you point at) — it is not a crawler — and treats the polished prose as a prompt
+  to write the rawer truth underneath.
 - **Triage** (`src/lib/core/triage/`) — a deterministic prefilter that always
   runs, plus an optional LLM pass, annotates each candidate with a
   `keep | frivolous` sort signal. It only sorts: never deletes, hides, or
   auto-rejects, and the signal is stripped on promote.
 - **Feeds** (`src/lib/core/feeds.ts`) — save a configured source (GitHub, Asana,
-  Gmail, Claude Code, or Warp) as a re-runnable *feed*, then **Refresh all** to
+  Gmail, website, Claude Code, or Warp) as a re-runnable *feed*, then **Refresh all** to
   re-pull every one in a click. Feeds are machine-local (localStorage, never the
   record — tokens stay in the keyring), and re-running only stages what's new.
   Inbox-only like every import; nothing is auto-promoted.

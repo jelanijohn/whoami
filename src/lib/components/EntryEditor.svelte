@@ -1,12 +1,17 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { app } from '$lib/state.svelte';
   import { ENTRY_TYPES, type Entry } from '$lib/core';
   import { closeDatePicker } from '$lib/actions/closeDatePicker';
 
   let { entry = null, ondone }: { entry?: Entry | null; ondone: () => void } = $props();
 
-  const isNew = entry === null;
-  const fm = entry?.frontmatter;
+  // The editor is mounted fresh per entry, so we intentionally seed the form
+  // model from the prop's initial value. `untrack` makes that one-shot snapshot
+  // explicit (and silences the state_referenced_locally hint).
+  const initial = untrack(() => entry);
+  const isNew = initial === null;
+  const fm = initial?.frontmatter;
   const s = (k: string) => (fm && typeof fm[k] === 'string' ? (fm[k] as string) : '');
 
   // Form model.
@@ -22,7 +27,7 @@
   let linksText = $state(
     Array.isArray(fm?.links) ? (fm!.links as string[]).join('\n') : s('links')
   );
-  let body = $state(entry?.body ?? '');
+  let body = $state(initial?.body ?? '');
   // Affiliation: the `slug` of the project entry this belongs to. Empty = none.
   let project = $state(s('project'));
 

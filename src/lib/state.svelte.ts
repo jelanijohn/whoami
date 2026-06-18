@@ -31,6 +31,11 @@ import {
   type WarpQueryRow,
   type WarpConversationMeta,
   parseResume,
+  acquireWebsite,
+  parseWebsite,
+  buildIdentityProposal,
+  applyIdentityMerge,
+  type IdentityProposal,
   stageItems,
   selectNewItems,
   triageItems,
@@ -133,6 +138,9 @@ export interface ImportSettings {
     limit: number;
   };
   gmail: { query: string; limit: number };
+  /** Website import (website-import spec §7.1): `urls` is a textarea, one URL
+   * per line. All three are stored as strings for the form inputs. */
+  website: { urls: string; sitemapUrl: string; maxPages: string };
   /** Triage settings (spec §6): the per-import LLM flag (off by default) plus
    * optional rubric overrides. Persisted here (localStorage), never the record. */
   triage: { useLlm: boolean; rubric?: Partial<TriageRubric> };
@@ -153,6 +161,7 @@ export const DEFAULT_IMPORT_SETTINGS: ImportSettings = {
   },
   asana: { workspace: '', project: '', since: '', until: '', includeCompleted: true, limit: 100 },
   gmail: { query: '', limit: 25 },
+  website: { urls: '', sitemapUrl: '', maxPages: '25' },
   triage: { useLlm: false }
 };
 
@@ -201,6 +210,10 @@ class AppState {
   feeds = $state<Feed[]>([]);
   /** Result of the most recent Refresh-all run, surfaced in the Import page. */
   lastRefreshReport = $state<RefreshReport | null>(null);
+  /** A pending identity-merge proposal awaiting the user's review, or null
+   *  (profile-merge spec §3.1). Held like a {@link ReduceProposal} — never
+   *  auto-applied, transient (not persisted). */
+  pendingIdentityProposal = $state<IdentityProposal | null>(null);
   /** Persisted LLM provider choice (plan §3), or null when none is configured. */
   llmConfig = $state<LlmConfig | null>(null);
   /** True when an {@link Llm} is actually built and ready to call. */
@@ -264,6 +277,7 @@ class AppState {
             github: { ...DEFAULT_IMPORT_SETTINGS.github, ...p.github },
             asana: { ...DEFAULT_IMPORT_SETTINGS.asana, ...p.asana },
             gmail: { ...DEFAULT_IMPORT_SETTINGS.gmail, ...p.gmail },
+            website: { ...DEFAULT_IMPORT_SETTINGS.website, ...p.website },
             triage: { ...DEFAULT_IMPORT_SETTINGS.triage, ...p.triage }
           };
         } catch {
@@ -1174,6 +1188,84 @@ class AppState {
     });
   }
 
+  /**
+   * Website import (website-import spec §7.1). Two stages, mirroring résumé:
+   * Stage 1 `acquireWebsite` is deterministic + LLM-free (fetch → clean →
+   * extract); Stage 2 `parseWebsite` is the one LLM pass, run here BEFORE
+   * `stageItems` (the staging boundary never calls an LLM). The LLM is mandatory
+   * — polished prose has no deterministic parse — so with no provider or no http
+   * seam the action refuses rather than falling back (spec §0.1, §12.1).
+   *
+   * Every candidate stages `private: true` regardless of any feed flag (spec
+   * §0.3, §12.6). The identity harvest may run inside `acquireWebsite`, but v1
+   * neither surfaces nor persists it (spec §4 / D5) — no profile write occurs.
+   */
+  async importWebsite(
+    params: { urls: string[]; sitemapUrl?: string; maxPages?: number },
+    over?: { useLlmTriage?: boolean; project?: string }
+  ): Promise<IngestReport | null> {
+    return this.guard(async () => {
+      if (!this.store || !this.platform) throw new Error('Open a record folder first');
+      const http = this.platform.http;
+      if (!http) throw new Error('This platform has no network support');
+      if (!this.llmReady || !this.llm) {
+        throw new Error('Website import needs a configured LLM provider (Data → AI provider)');
+      }
+      if (params.urls.length === 0 && !params.sitemapUrl) {
+        throw new Error('Enter at least one page URL or a sitemap URL');
+      }
+      // Stage 1 — deterministic acquisition (no LLM, not a crawler).
+      const acquired = await acquireWebsite(http, {
+        urls: params.urls,
+        sitemapUrl: params.sitemapUrl,
+        maxPages: params.maxPages
+      });
+      if (acquired.pages.length === 0) {
+        const failed = acquired.errors.length
+          ? ` (${acquired.errors.length} page${acquired.errors.length === 1 ? '' : 's'} failed or were empty)`
+          : '';
+        throw new Error(`No usable pages fetched${failed}`);
+      }
+      // Stage 2 — the single LLM extraction pass, before staging.
+      const { items, errors } = await parseWebsite(this.llm, acquired.pages);
+      // Dedupe gate, then optional triage — neither re-sends already-handled
+      // content to a provider (spec §7.1). Website prose is polished/public, so
+      // it honors the LLM-triage flag like github (spec §7.3), unlike chat sources.
+      const fresh = await selectNewItems(this.store, items);
+      const useLlmTriage = over?.useLlmTriage ?? this.importSettings.triage.useLlm;
+      const signals = await this.triageFresh(fresh, useLlmTriage);
+      const report = await stageItems(this.store, items, {
+        signals,
+        private: true,
+        project: over?.project ?? this.importProject
+      });
+      // Surface acquisition + parse problems (failed/short pages, dropped items)
+      // next to any staging errors so the owner knows what was skipped.
+      report.errors.push(...acquired.errors, ...errors);
+      // Identity harvest (profile-merge spec §3.2): the deterministic harvest ran
+      // inside acquisition. If it found links, hold a proposal against the current
+      // profile for review — this writes NOTHING to the profile itself.
+      const proposed = acquired.identities; // Record<platform,url>
+      if (Object.keys(proposed).length) {
+        const existing = (this.profile?.frontmatter.identities as Record<string, string>) ?? {};
+        const proposal = buildIdentityProposal(existing, proposed);
+        this.pendingIdentityProposal = proposal.hasActionable ? proposal : null;
+      }
+      this.lastImportReport = report;
+      await this.loadCandidates();
+      const known = report.skippedPromoted + report.skippedRejected;
+      // When pages were fetched but nothing was proposed, say why: the importer
+      // never invents a date (spec §8), so undated prose and client-rendered
+      // pages yield nothing — that's the brutal-accuracy boundary, not a failure.
+      const hint =
+        items.length === 0
+          ? ' — no dated items found (it never guesses dates; try a page with explicit dates, or Résumé import)'
+          : '';
+      this.message = `website: fetched ${acquired.pages.length} page${acquired.pages.length === 1 ? '' : 's'}, parsed ${items.length}, staged ${report.staged}, ${known} already known${report.errors.length ? `, ${report.errors.length} notes` : ''}${hint}`;
+      return report;
+    });
+  }
+
   // --- Import feeds (import-feed-spec) ---------------------------------------
 
   /** Persist the feed list (outside the record repo). Quiet — the CRUD callers
@@ -1201,7 +1293,7 @@ class AppState {
    * (spec §4.2.4), add it, and return it. The pure shaping (per-kind param shape
    * + forced picker flags) lives in {@link buildFeed}. */
   saveCurrentAsFeed(kind: FeedKind, label: string): Feed {
-    const live = kind === 'github' || kind === 'asana' || kind === 'gmail';
+    const live = kind === 'github' || kind === 'asana' || kind === 'gmail' || kind === 'website';
     const feed = buildFeed({
       id: crypto.randomUUID(),
       label,
@@ -1242,6 +1334,13 @@ class AppState {
       if (feed.kind === 'github') report = await this.importGithub(this.toGithubParams(params), over);
       else if (feed.kind === 'asana') report = await this.importAsana(this.toAsanaParams(params), over);
       else if (feed.kind === 'gmail') report = await this.importGmail(this.toGmailParams(params), over);
+      else if (feed.kind === 'website')
+        // Website always stages private (spec §0.3); the feed's `private` flag is
+        // ignored — only its useLlm/project carry over.
+        report = await this.importWebsite(this.toWebsiteParams(params), {
+          useLlmTriage: feed.useLlm,
+          project: feed.project
+        });
     }
     if (report) this.updateFeed(feed.id, { lastRunAt: new Date().toISOString() });
     return report;
@@ -1278,6 +1377,23 @@ class AppState {
 
   private toGmailParams(p: Record<string, unknown>): Omit<GmailFetchOpts, 'token'> {
     return { query: String(p.query ?? '').trim(), limit: (p.limit as number) || undefined };
+  }
+
+  /** Convert a stored website param snapshot to `importWebsite` params (mirrors
+   * the form's `runWebsite`): split the `urls` textarea into lines, trim a
+   * sitemap URL, and parse the page cap. */
+  private toWebsiteParams(p: Record<string, unknown>): { urls: string[]; sitemapUrl?: string; maxPages?: number } {
+    const urls = String(p.urls ?? '')
+      .split('\n')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const maxStr = String(p.maxPages ?? '').trim();
+    const maxPages = maxStr ? Number(maxStr) : undefined;
+    return {
+      urls,
+      sitemapUrl: String(p.sitemapUrl ?? '').trim() || undefined,
+      maxPages: maxPages && Number.isFinite(maxPages) && maxPages > 0 ? maxPages : undefined
+    };
   }
 
   /**
@@ -1414,6 +1530,31 @@ class AppState {
       this.profile = await this.store!.readProfile();
       this.message = 'Profile saved';
     });
+  }
+
+  /** The accept gate (profile-merge spec §3.3): merge the ticked identity rows
+   *  into the profile via the normal text-first write path, then clear the
+   *  pending proposal. `selected` is platform → url. Writes nothing unless called. */
+  async applyIdentityMerge(selected: Record<string, string>): Promise<void> {
+    if (!this.store || !this.profile) return;
+    await this.guard(async () => {
+      const prev = this.profile!.frontmatter;
+      const existing = (prev.identities as Record<string, string>) ?? {};
+      const identities = applyIdentityMerge(existing, selected);
+      await this.store!.saveProfile({
+        frontmatter: { ...prev, identities }, // preserve unknown keys (profile.ts round-trip)
+        body: this.profile!.body
+      });
+      this.profile = await this.store!.readProfile();
+      this.pendingIdentityProposal = null;
+      const n = Object.keys(selected).length;
+      this.message = `Added ${n} identit${n === 1 ? 'y' : 'ies'} to your profile`;
+    });
+  }
+
+  /** Dismiss the pending identity proposal without writing anything (spec §3.3). */
+  dismissIdentityProposal(): void {
+    this.pendingIdentityProposal = null;
   }
 
   // --- Outputs --------------------------------------------------------------

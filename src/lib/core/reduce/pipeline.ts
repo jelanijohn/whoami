@@ -48,6 +48,7 @@ export async function runReducePipeline(
 
   const maxTokens = input.maxTokens ?? DEFAULT_REDUCE_MAX_TOKENS;
   const chunks = chunkEntries(entries, { tokenBudget: input.tokenBudget });
+  const validIds = new Set(entries.map((e) => String(e.frontmatter.id)));
   const mapOutputs: Retrospective[] = [];
   for (const chunk of chunks) {
     const chunkIds = new Set(chunk.map((e) => String(e.frontmatter.id)));
@@ -56,18 +57,31 @@ export async function runReducePipeline(
     mapOutputs.push(filterByEvidence(parseRetrospective(raw), chunkIds));
   }
 
-  const validIds = new Set(entries.map((e) => String(e.frontmatter.id)));
+  // An empty surviving fact set fails visibly rather than writing nothing.
+  const requireFacts = (retro: Retrospective): Retrospective => {
+    if (factCount(retro) === 0) {
+      throw new Error('reduce: produced no verifiable facts (nothing written)');
+    }
+    return retro;
+  };
+
+  // Single chunk: the map output already IS the answer — the reduce pass only
+  // merges/orders facts ACROSS chunks, of which there are none here, so skip the
+  // extra LLM call (TODO §3.5). The full-set evidence filter still runs (it's the
+  // same id set the chunk was filtered by, so it's a safe no-op) and the
+  // empty-result guard still holds. Tradeoff: the reduce pass's chronological
+  // re-ordering and rollup/prose context aren't applied to a lone chunk —
+  // acceptable, since there is nothing to merge.
+  if (chunks.length === 1) {
+    return requireFacts(filterByEvidence(mapOutputs[0], validIds));
+  }
+
   const summary = rollupSummary(rollupEntries(entries));
   const raw = await llm.complete({
     ...buildReducePrompt(mapOutputs, summary, input.projectProse),
     maxTokens
   });
-  const merged = filterByEvidence(parseRetrospective(raw), validIds);
-
-  if (factCount(merged) === 0) {
-    throw new Error('reduce: produced no verifiable facts (nothing written)');
-  }
-  return merged;
+  return requireFacts(filterByEvidence(parseRetrospective(raw), validIds));
 }
 
 /** A reduce proposal awaiting the human's accept gate (plan §4.4). Nothing is

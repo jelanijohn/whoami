@@ -13,7 +13,13 @@
 import type { LlmCompletionRequest } from '../../types';
 import { DATA_GUARD } from '../../reduce/prompts';
 
-const SCHEMA_NOTE =
+/**
+ * The closed extraction JSON schema, shared verbatim by every front-end that
+ * reuses the résumé core (résumé, website — website-import spec §2.3.3). The
+ * wording stays résumé-flavoured ("the text") so both prompts read naturally;
+ * each front-end supplies its own SYSTEM framing around it.
+ */
+export const EXTRACTION_SCHEMA_NOTE =
   'Respond with ONLY a JSON object (no prose, no code fence) of this exact shape:\n' +
   '{"items":[{' +
   '"type":"role|project|education|win|milestone",' +
@@ -39,7 +45,7 @@ const RESUME_SYSTEM =
   'Skip objective/summary blurbs, skills lists, and references. ' +
   DATA_GUARD +
   '\n' +
-  SCHEMA_NOTE;
+  EXTRACTION_SCHEMA_NOTE;
 
 /** Build the extraction request for one chunk of résumé text. */
 export function buildResumePrompt(text: string): LlmCompletionRequest {

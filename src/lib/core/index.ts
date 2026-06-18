@@ -55,6 +55,13 @@ export {
 } from './profile';
 
 export {
+  buildIdentityProposal,
+  applyIdentityMerge,
+  type IdentityProposal,
+  type IdentityProposalRow
+} from './profile-merge';
+
+export {
   ensureSchema,
   dropSchema,
   rebuild,
