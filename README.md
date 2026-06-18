@@ -52,9 +52,11 @@ src/lib/state.svelte.ts    Svelte 5 runes app state driving the UI.
 src/lib/{appearance,theme}.svelte.ts  Appearance + theme (dark mode) preferences.
 src/lib/journal/      Pure helpers for the Journal views: grouping, date
                         formatting, and the type/project color palette.
-src/lib/components/   Titlebar, AppMenu, entry/candidate cards, editor, the
-                        credential-setup help popups, the identity merge-review
-                        panel, and the Journal views
+src/lib/inbox/        Pure helpers for the Inbox triage view: candidate filter/
+                        sort/group + the per-source palette and glyph map.
+src/lib/components/   Titlebar, AppMenu, the collapsible candidate row, editor,
+                        the credential-setup help popups, the identity
+                        merge-review panel, and the Journal views
                         (Grouped · Timeline · Calendar · Table).
 src/routes/          SvelteKit SPA: Journal · Import · Inbox · Projects ·
                        Profile · Resume · Personal site · Data.
