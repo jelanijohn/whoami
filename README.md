@@ -91,7 +91,9 @@ explicit promote.**
   fixture-tested; the layer never touches the record, secrets, or the index
   directly. The website importer fetches only the pages you enter (and a sitemap
   you point at) — it is not a crawler — and treats the polished prose as a prompt
-  to write the rawer truth underneath.
+  to write the rawer truth underneath. An item that arrives without a real date is
+  staged as *needs-date*: you set its date in the inbox before promoting — the app
+  never silently defaults it to today (brutal accuracy).
 - **Triage** (`src/lib/core/triage/`) — a deterministic prefilter that always
   runs, plus an optional LLM pass, annotates each candidate with a
   `keep | frivolous` sort signal. It only sorts: never deletes, hides, or
