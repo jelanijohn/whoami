@@ -139,8 +139,12 @@ export interface ImportSettings {
   };
   gmail: { query: string; limit: number };
   /** Website import (website-import spec §7.1): `urls` is a textarea, one URL
-   * per line. All three are stored as strings for the form inputs. */
-  website: { urls: string; sitemapUrl: string; maxPages: string };
+   * per line. All three are stored as strings for the form inputs. `allowUndated`
+   * carries entries the parser can't date into the inbox (allow-undated spec §D). */
+  website: { urls: string; sitemapUrl: string; maxPages: string; allowUndated: boolean };
+  /** Résumé import: the only persisted résumé setting today — carry roles/wins
+   * the parser can't date into the inbox (allow-undated spec §D). */
+  resume: { allowUndated: boolean };
   /** Triage settings (spec §6): the per-import LLM flag (off by default) plus
    * optional rubric overrides. Persisted here (localStorage), never the record. */
   triage: { useLlm: boolean; rubric?: Partial<TriageRubric> };
@@ -161,7 +165,8 @@ export const DEFAULT_IMPORT_SETTINGS: ImportSettings = {
   },
   asana: { workspace: '', project: '', since: '', until: '', includeCompleted: true, limit: 100 },
   gmail: { query: '', limit: 25 },
-  website: { urls: '', sitemapUrl: '', maxPages: '25' },
+  website: { urls: '', sitemapUrl: '', maxPages: '25', allowUndated: false },
+  resume: { allowUndated: false },
   triage: { useLlm: false }
 };
 
@@ -278,6 +283,7 @@ class AppState {
             asana: { ...DEFAULT_IMPORT_SETTINGS.asana, ...p.asana },
             gmail: { ...DEFAULT_IMPORT_SETTINGS.gmail, ...p.gmail },
             website: { ...DEFAULT_IMPORT_SETTINGS.website, ...p.website },
+            resume: { ...DEFAULT_IMPORT_SETTINGS.resume, ...p.resume },
             triage: { ...DEFAULT_IMPORT_SETTINGS.triage, ...p.triage }
           };
         } catch {
@@ -566,10 +572,10 @@ class AppState {
 
   /** Promote a candidate into the record, assigning the picked project (plan
    * §2.4). An empty `project` clears any suggested affiliation. */
-  async promoteCandidate(candidatePath: string, project = ''): Promise<Entry | null> {
+  async promoteCandidate(candidatePath: string, project = '', date?: string): Promise<Entry | null> {
     if (!this.store) return null;
     return this.guard(async () => {
-      const e = await this.store!.promoteCandidate(candidatePath, { project });
+      const e = await this.store!.promoteCandidate(candidatePath, { project, date });
       this.candidates = await this.store!.listCandidates();
       await this.refresh();
       this.message = `Promoted “${e.frontmatter.title}”`;
@@ -624,15 +630,15 @@ class AppState {
   /** Promote several candidates in one pass, reloading + refreshing once at the
    * end rather than per item. A single item failing doesn't abort the rest;
    * the toast reports how many succeeded. Returns the count promoted. */
-  async promoteCandidates(items: { path: string; project?: string }[]): Promise<number> {
+  async promoteCandidates(items: { path: string; project?: string; date?: string }[]): Promise<number> {
     if (!this.store || items.length === 0) return 0;
     return (
       (await this.guard(async () => {
         let ok = 0;
         let failed = 0;
-        for (const { path, project = '' } of items) {
+        for (const { path, project = '', date } of items) {
           try {
-            await this.store!.promoteCandidate(path, { project });
+            await this.store!.promoteCandidate(path, { project, date });
             ok++;
           } catch {
             failed++;
@@ -1170,7 +1176,10 @@ class AppState {
 
       const { text } = await this.platform.docs.extractText(path);
       const model = this.llmConfig ? `${this.llmConfig.provider}:${this.llmConfig.model}` : undefined;
-      const { items, errors } = await parseResume(this.llm, text, { model });
+      const { items, errors } = await parseResume(this.llm, text, {
+        model,
+        allowUndated: this.importSettings.resume.allowUndated
+      });
       // Dedupe before anything else (spec §6 step 4).
       const fresh = await selectNewItems(this.store, items);
       // Résumé items are record-grade like LinkedIn rows: prefilter-only, never
@@ -1202,7 +1211,7 @@ class AppState {
    */
   async importWebsite(
     params: { urls: string[]; sitemapUrl?: string; maxPages?: number },
-    over?: { useLlmTriage?: boolean; project?: string }
+    over?: { useLlmTriage?: boolean; project?: string; allowUndated?: boolean }
   ): Promise<IngestReport | null> {
     return this.guard(async () => {
       if (!this.store || !this.platform) throw new Error('Open a record folder first');
@@ -1227,7 +1236,8 @@ class AppState {
         throw new Error(`No usable pages fetched${failed}`);
       }
       // Stage 2 — the single LLM extraction pass, before staging.
-      const { items, errors } = await parseWebsite(this.llm, acquired.pages);
+      const allowUndated = over?.allowUndated ?? this.importSettings.website.allowUndated;
+      const { items, errors } = await parseWebsite(this.llm, acquired.pages, { allowUndated });
       // Dedupe gate, then optional triage — neither re-sends already-handled
       // content to a provider (spec §7.1). Website prose is polished/public, so
       // it honors the LLM-triage flag like github (spec §7.3), unlike chat sources.
@@ -1258,8 +1268,8 @@ class AppState {
       // never invents a date (spec §8), so undated prose and client-rendered
       // pages yield nothing — that's the brutal-accuracy boundary, not a failure.
       const hint =
-        items.length === 0
-          ? ' — no dated items found (it never guesses dates; try a page with explicit dates, or Résumé import)'
+        items.length === 0 && !allowUndated
+          ? ' — no dated items found (it never guesses dates; enable “Allow undated items”, or try Résumé import)'
           : '';
       this.message = `website: fetched ${acquired.pages.length} page${acquired.pages.length === 1 ? '' : 's'}, parsed ${items.length}, staged ${report.staged}, ${known} already known${report.errors.length ? `, ${report.errors.length} notes` : ''}${hint}`;
       return report;
@@ -1339,7 +1349,8 @@ class AppState {
         // ignored — only its useLlm/project carry over.
         report = await this.importWebsite(this.toWebsiteParams(params), {
           useLlmTriage: feed.useLlm,
-          project: feed.project
+          project: feed.project,
+          allowUndated: !!params.allowUndated
         });
     }
     if (report) this.updateFeed(feed.id, { lastRunAt: new Date().toISOString() });

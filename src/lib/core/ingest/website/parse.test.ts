@@ -69,6 +69,25 @@ describe('shared parser via website opts', () => {
     expect(errors.some((e) => /undated/.test(e))).toBe(true);
   });
 
+  it('website undated carried when allowUndated', () => {
+    const errors: string[] = [];
+    const undated = {
+      type: 'win',
+      title: 'Shipped the rewrite',
+      start: 'someday',
+      excerpt: 'shipping the billing rewrite'
+    };
+    const items = parseResumeItems(reply([undated]), SOURCE, errors, {
+      ...WEBSITE_OPTS,
+      allowUndated: true
+    });
+    expect(items).toHaveLength(1);
+    expect(items[0].source).toBe('website');
+    expect(items[0].date).toBe('');
+    expect(items[0].extraFrontmatter?.needs_date).toBe(true);
+    expect(errors.some((e) => /staged/.test(e))).toBe(true);
+  });
+
   it('resume_parse_unchanged_when_opts_absent', () => {
     // Regression (spec §11 Phase A): no opts ⇒ byte-for-byte résumé behavior.
     const items = parseResumeItems(reply([ROLE, PROJECT]), SOURCE);

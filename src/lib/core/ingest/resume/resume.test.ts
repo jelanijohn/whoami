@@ -221,6 +221,62 @@ describe('parseResumeItems', () => {
   });
 });
 
+// --- allow-undated flag (allow-undated-imports spec §A) ---------------------
+
+describe('parseResumeItems — allowUndated', () => {
+  // A verifiable span the parser cannot date (start won't parse).
+  const UNDATED = {
+    type: 'role',
+    title: 'Intern',
+    role: 'Intern',
+    org: 'Acme Corp',
+    start: 'a while back',
+    excerpt: 'Built the billing service from scratch.'
+  };
+  const reply = (items: unknown[]) => JSON.stringify({ items });
+
+  it('undated dropped by default', () => {
+    const errors: string[] = [];
+    const items = parseResumeItems(reply([UNDATED]), RESUME, errors);
+    expect(items).toHaveLength(0);
+    expect(errors.some((e) => /dropped/.test(e))).toBe(true);
+  });
+
+  it('undated carried when allowUndated', () => {
+    const errors: string[] = [];
+    const items = parseResumeItems(reply([UNDATED]), RESUME, errors, { allowUndated: true });
+    expect(items).toHaveLength(1);
+    expect(items[0].date).toBe('');
+    expect(items[0].extraFrontmatter?.needs_date).toBe(true);
+    // Still reported, but as staged-for-dating rather than dropped.
+    expect(errors.some((e) => /staged/.test(e))).toBe(true);
+  });
+
+  it('undated still gated by evidence filter', () => {
+    const errors: string[] = [];
+    const fabricated = { ...UNDATED, excerpt: 'Awarded the Nobel Prize for time travel.' };
+    const items = parseResumeItems(reply([fabricated]), RESUME, errors, { allowUndated: true });
+    expect(items).toHaveLength(0);
+    expect(errors.some((e) => /unverifiable/.test(e))).toBe(true);
+  });
+
+  it('dated items unaffected by flag', () => {
+    const dated = {
+      type: 'role',
+      title: 'Software Engineer',
+      role: 'Software Engineer',
+      org: 'Acme Corp',
+      start: '2016-01',
+      excerpt: 'Built the billing service from scratch.'
+    };
+    const off = parseResumeItems(reply([dated]), RESUME);
+    const on = parseResumeItems(reply([dated]), RESUME, [], { allowUndated: true });
+    expect(on).toEqual(off);
+    expect(on[0].date).toBe('2016-01-01');
+    expect(on[0].extraFrontmatter && 'needs_date' in on[0].extraFrontmatter).toBe(false);
+  });
+});
+
 // --- chunk & prompt ---------------------------------------------------------
 
 describe('chunkResumeText', () => {

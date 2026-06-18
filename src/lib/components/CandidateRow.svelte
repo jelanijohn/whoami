@@ -12,9 +12,11 @@
     expanded = false,
     compact = false,
     project,
+    date,
     onselect,
     ontoggle,
     onprojectchange,
+    ondatechange,
     onpromote,
     onreject
   }: {
@@ -28,10 +30,14 @@
     /** Current per-item project value (owned by the page, seeded from the
      * suggestion) — bound through `onprojectchange` so promote reads one source. */
     project: string;
+    /** Current per-item date override (page-owned, '' when unset). Only meaningful
+     * for needs-date candidates (allow-undated spec §E). */
+    date: string;
     onselect: (path: string, checked: boolean) => void;
     ontoggle: () => void;
     onprojectchange: (path: string, slug: string) => void;
-    onpromote: (path: string, project: string) => void;
+    ondatechange: (path: string, date: string) => void;
+    onpromote: (path: string, project: string, date: string) => void;
     onreject: (path: string, title: string) => void;
   } = $props();
 
@@ -54,6 +60,17 @@
   // an option so the picker can keep the suggestion as the promote value.
   const suggested = $derived(typeof fm.project === 'string' ? fm.project : '');
   const suggestedOrphan = $derived(suggested !== '' && !projects.some((p) => p.slug === suggested));
+
+  // Needs-date gating (allow-undated spec §E.2). Belt and suspenders: trust the
+  // marker or an empty/invalid date.
+  const isoOk = (s: string) => /^\d{4}-\d{2}-\d{2}$/.test(s);
+  const needsDate = $derived(
+    fm.needs_date === true || !isoOk(typeof fm.date === 'string' ? fm.date : '')
+  );
+  // The effective date this row would promote with: the page override if set,
+  // else the candidate's own (already-valid) date.
+  const promoteDate = $derived(date || (typeof fm.date === 'string' ? fm.date : ''));
+  const canPromote = $derived(!needsDate || isoOk(promoteDate));
 
   // Stop the row's expand-toggle from firing when interacting with controls.
   const stop = (fn: () => void) => (e: Event) => {
@@ -134,18 +151,25 @@
     >
   {/if}
 
-  <!-- Relative date -->
-  <span class="w-[62px] shrink-0 text-right text-[11px] tabular-nums text-[var(--jv-faint)]"
-    >{relativeDate(String(fm.date))}</span
-  >
+  <!-- Relative date — or a needs-date badge when undated -->
+  {#if needsDate}
+    <span
+      class="w-[62px] shrink-0 rounded-[5px] px-[7px] py-0.5 text-center text-[10px] font-semibold"
+      style="color:{FLAGGED_COLOR};background:rgba(192,122,0,0.12)">needs date</span
+    >
+  {:else}
+    <span class="w-[62px] shrink-0 text-right text-[11px] tabular-nums text-[var(--jv-faint)]"
+      >{relativeDate(String(fm.date))}</span
+    >
+  {/if}
 
   <!-- Quick promote -->
   <button
     type="button"
-    title="Promote"
+    title={canPromote ? 'Promote' : 'Set a date first'}
     aria-label="Promote “{title}”"
-    disabled={busy}
-    onclick={stop(() => onpromote(path, project))}
+    disabled={busy || !canPromote}
+    onclick={stop(() => onpromote(path, project, promoteDate))}
     class="grid size-7 shrink-0 place-items-center rounded-[7px] disabled:opacity-50"
     style="background:rgba(31,158,111,0.1);color:{KEPT_COLOR}"
   >
@@ -222,6 +246,21 @@
       {/if}
 
       <div class="ml-auto flex items-center gap-[9px]">
+        {#if needsDate}
+          <label
+            class="flex items-center gap-2 text-[11px] uppercase tracking-[0.04em] text-[var(--jv-date)]"
+            for="date-{fm.id}"
+          >
+            Date
+            <input
+              id="date-{fm.id}"
+              type="date"
+              value={date}
+              onchange={(e) => ondatechange(path, e.currentTarget.value)}
+              class="h-[30px] rounded-lg border border-[var(--color-line)] bg-white px-2 text-[13px] text-[var(--color-ink)] dark:bg-[var(--color-bar)]"
+            />
+          </label>
+        {/if}
         <label class="text-[11px] uppercase tracking-[0.04em] text-[var(--jv-date)]" for="proj-{fm.id}"
           >Project</label
         >
@@ -250,8 +289,9 @@
         </button>
         <button
           type="button"
-          disabled={busy}
-          onclick={() => onpromote(path, project)}
+          title={canPromote ? 'Promote' : 'Set a date first'}
+          disabled={busy || !canPromote}
+          onclick={() => onpromote(path, project, promoteDate)}
           class="h-[30px] rounded-lg bg-[var(--color-accent)] px-3 text-[12px] font-semibold text-white hover:opacity-90 disabled:opacity-50"
         >
           Promote

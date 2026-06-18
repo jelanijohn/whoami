@@ -43,7 +43,7 @@ function normalizeWs(s: string): string {
 export async function parseWebsite(
   llm: Llm,
   pages: FetchedPage[],
-  opts: { tokenBudget?: number } = {}
+  opts: { tokenBudget?: number; allowUndated?: boolean } = {}
 ): Promise<ParseWebsiteResult> {
   // Concatenate cleaned pages, each behind a deterministic marker line (spec
   // §5.2). The marker is part of the data block — harmless to the model, useful
@@ -64,7 +64,8 @@ export async function parseWebsite(
       parsed = parseResumeItems(raw, fullText, errors, {
         source: WEBSITE_SOURCE,
         tag: 'website',
-        makeSourceId: websiteSourceId
+        makeSourceId: websiteSourceId,
+        allowUndated: opts.allowUndated
       });
     } catch (e) {
       errors.push(`chunk ${i + 1}/${chunks.length} failed: ${String(e)}`);

@@ -1039,6 +1039,32 @@ describe('staging pipeline', () => {
     expect(await store.listCandidates()).toHaveLength(0);
   });
 
+  it('needs_date item stages with empty date (allow-undated spec §B)', async () => {
+    const undated: RawItem = {
+      source: 'resume',
+      sourceId: 'role:acme::intern:',
+      title: 'Intern — Acme',
+      date: '',
+      body: 'Built the billing service from scratch.',
+      suggestedType: 'role',
+      suggestedTags: ['resume'],
+      extraFrontmatter: { needs_date: true }
+    };
+    const report = await stageItems(store, [undated]);
+    expect(report.staged).toBe(1);
+    const candidates = await store.listCandidates();
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0].frontmatter.date).toBe('');
+    expect(candidates[0].frontmatter.needs_date).toBe(true);
+  });
+
+  it('dated item still defaults to today when date is empty (regression)', () => {
+    const input = rawItemToEntryInput({ ...item(1), date: '' });
+    // No needs_date marker ⇒ empty date collapses to undefined, makeEntry
+    // stamps today — byte-for-byte the prior behavior.
+    expect(input.date).toBeUndefined();
+  });
+
   it('survives bad items without aborting the batch', async () => {
     const bad: RawItem = { source: 'github', sourceId: '', title: 'no id', date: '2026-01-01' };
     const r = await stageItems(store, [bad, item(3)]);

@@ -940,6 +940,19 @@
                       </span>
                     </p>
                   {/if}
+                  <label class="flex items-start gap-2 text-xs text-[var(--color-muted)]">
+                    <input
+                      type="checkbox"
+                      class="mt-0.5"
+                      bind:checked={app.importSettings.resume.allowUndated}
+                      onchange={() => app.saveImportSettings($state.snapshot(app.importSettings))}
+                    />
+                    <span>
+                      Allow undated items — keep roles/wins the parser can't date. They stage to the
+                      <a href="/inbox" class="text-[var(--color-accent)] hover:underline">Inbox</a> flagged
+                      <em>needs date</em>; you set a date there before promoting. Nothing is ever dated to today.
+                    </span>
+                  </label>
                   <div class="flex flex-wrap items-center gap-2 border-t border-dashed border-[var(--color-line)] pt-3">
                     <button
                       class={runCls}
@@ -1016,6 +1029,18 @@
                       </label>
                     </div>
                   </div>
+                  <label class="flex items-start gap-2 text-xs text-[var(--color-muted)]">
+                    <input
+                      type="checkbox"
+                      class="mt-0.5"
+                      bind:checked={app.importSettings.website.allowUndated}
+                      onchange={() => app.saveImportSettings($state.snapshot(app.importSettings))}
+                    />
+                    <span>
+                      Allow undated items — keep entries the parser can't date; set their dates in the Inbox
+                      before promoting. Never dated to today.
+                    </span>
+                  </label>
                   <div class="flex flex-wrap items-center gap-2 border-t border-dashed border-[var(--color-line)] pt-3">
                     <button
                       class={runCls}

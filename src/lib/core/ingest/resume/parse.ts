@@ -36,6 +36,11 @@ export interface ExtractParseOpts {
   tag?: string;
   /** Deterministic id from the item's identity (default {@link resumeSourceId}). */
   makeSourceId?: (item: ResumeItem, start: string) => string;
+  /** When true, an item whose `start` won't parse is NOT dropped: it is emitted
+   * with an empty `date` and `extraFrontmatter.needs_date = true`, so the inbox
+   * can stage it and require the human to date it before promote. Default false
+   * ⇒ today's behavior (undated items dropped + reported). */
+  allowUndated?: boolean;
 }
 
 /** Collapse all whitespace runs to single spaces — résumé text often re-flows
@@ -105,7 +110,12 @@ function resumeSourceId(item: ResumeItem, start: string): string {
 /** Map a validated, dated item onto a `RawItem` (spec §2 table). `start` is the
  * already-normalized YYYY-MM-DD date. `opts` lets a sibling front-end (website)
  * stamp its own source/tag/sourceId; absent ⇒ résumé defaults. */
-function mapItem(item: ResumeItem, start: string, opts: ExtractParseOpts = {}): RawItem {
+function mapItem(
+  item: ResumeItem,
+  start: string,
+  opts: ExtractParseOpts = {},
+  needsDate = false
+): RawItem {
   const source = opts.source ?? RESUME_SOURCE;
   const tag = opts.tag ?? 'resume';
   const makeSourceId = opts.makeSourceId ?? resumeSourceId;
@@ -121,6 +131,9 @@ function mapItem(item: ResumeItem, start: string, opts: ExtractParseOpts = {}): 
   if (item.org) extra.org = item.org;
   if (item.type === 'role' && item.role) extra.role = item.role;
   if (end) extra.end = end;
+  // Mark an undated survivor so staging keeps its date empty and the inbox
+  // requires the human to date it before promote (spec §A, D1).
+  if (needsDate) extra.needs_date = true;
 
   const out: RawItem = {
     source,
@@ -173,11 +186,19 @@ export function parseResumeItems(
       continue;
     }
 
-    // A timeline item with no parseable date can't be placed — drop, never
-    // default to today (spec §8). Reported so the owner can add it by hand.
+    // A timeline item with no parseable date can't be PLACED on the timeline.
     const start = liDate(item.start);
     if (!start) {
-      errors.push(`undated ${item.type} dropped (no parseable date): "${item.title}"`);
+      if (!opts.allowUndated) {
+        // Default: drop + report, exactly as before (résumé spec §8), never
+        // defaulting to today.
+        errors.push(`undated ${item.type} dropped (no parseable date): "${item.title}"`);
+        continue;
+      }
+      // Flag on: carry it with an empty date + a needs-date marker. It still had
+      // to pass the evidence filter above, so it is verifiable — only undated.
+      out.push(mapItem(item, '', opts, /* needsDate */ true));
+      errors.push(`undated ${item.type} staged — set its date in the Inbox: "${item.title}"`);
       continue;
     }
 

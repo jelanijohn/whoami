@@ -53,6 +53,7 @@ export function rawItemToEntryInput(
   projectOverride?: string
 ): NewEntryInput {
   const project = projectOverride?.trim() || item.suggestedProject;
+  const needsDate = item.extraFrontmatter?.needs_date === true;
   const extra: Record<string, unknown> = {
     source: item.source,
     source_id: item.sourceId,
@@ -66,7 +67,10 @@ export function rawItemToEntryInput(
   return {
     type: item.suggestedType ?? 'journal',
     title: item.title,
-    date: item.date || undefined, // empty → makeEntry defaults to today
+    // Undated (needs_date) ⇒ pass '' so makeEntry preserves it (its `??` only
+    // defaults null/undefined). Everything else keeps today's semantics: empty
+    // → makeEntry defaults to today.
+    date: needsDate ? '' : item.date || undefined,
     private: priv, // defaults true; a caller may opt a batch public from the start
     tags: item.suggestedTags ?? [],
     body: item.body ?? '',

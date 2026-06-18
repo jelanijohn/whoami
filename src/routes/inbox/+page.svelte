@@ -47,6 +47,8 @@
   let bulkProject = $state(KEEP);
   // Per-item project overrides, keyed by path; absent ⇒ use the suggestion.
   let itemProjects = $state<Record<string, string>>({});
+  // Per-item date overrides, keyed by path; absent ⇒ '' (use the row's own date).
+  let itemDates = $state<Record<string, string>>({});
   // Optional free-text steer appended to the LLM triage rubric.
   let llmInstructions = $state('');
   // Running tally of this session's promotes/rejects (the session summary strip).
@@ -112,6 +114,16 @@
   }
   function setItemProject(path: string, slug: string) {
     itemProjects = { ...itemProjects, [path]: slug };
+  }
+
+  // Per-item date overrides, keyed by path; absent ⇒ '' (use the row's own date).
+  // Mirrors itemProjects (allow-undated spec §E.3).
+  function getDate(c: Entry): string {
+    const path = c.path ?? '';
+    return path in itemDates ? itemDates[path] : '';
+  }
+  function setItemDate(path: string, date: string) {
+    itemDates = { ...itemDates, [path]: date };
   }
 
   // --- Group expansion -------------------------------------------------------
@@ -180,7 +192,7 @@
   // The project-resolution flow below is carried over unchanged from the prior
   // inbox: promoting an item whose slug isn't a project yet walks the distinct
   // missing slugs one at a time (create / file-under / promote-anyway).
-  type PromoteItem = { path: string; project: string };
+  type PromoteItem = { path: string; project: string; date?: string };
   let promoteItems = $state<PromoteItem[] | null>(null);
   let unresolved = $state<string[]>([]);
   let resolveTotal = $state(0);
@@ -230,7 +242,8 @@
   async function finalize() {
     const items = promoteItems!.map((i) => ({
       path: i.path,
-      project: resolutions.get(i.project.trim()) ?? i.project
+      project: resolutions.get(i.project.trim()) ?? i.project,
+      date: i.date
     }));
     reset();
     clearSelection();
@@ -267,8 +280,8 @@
     node.select();
   }
 
-  async function promote(path: string, project: string) {
-    await beginPromote([{ path, project: project.trim() }]);
+  async function promote(path: string, project: string, date?: string) {
+    await beginPromote([{ path, project: project.trim(), date }]);
   }
   async function reject(path: string, title: string) {
     if (confirm(`Reject “${title}”? It won't be proposed again.`)) {
@@ -282,7 +295,8 @@
       .filter((c): c is Entry => !!c)
       .map((c) => ({
         path: c.path!,
-        project: bulkProject === KEEP ? getProject(c) : bulkProject === '' ? '' : bulkProject
+        project: bulkProject === KEEP ? getProject(c) : bulkProject === '' ? '' : bulkProject,
+        date: getDate(c) || undefined
       }));
     if (items.length === 0) return;
     clearSelection();
@@ -619,10 +633,12 @@
                       selected={selected.has(c.path ?? '')}
                       expanded={expandedItems.has(c.path ?? '')}
                       project={getProject(c)}
+                      date={getDate(c)}
                       onselect={toggleSelect}
                       ontoggle={() => toggleItem(c.path ?? '')}
                       onprojectchange={setItemProject}
-                      onpromote={(p, proj) => void promote(p, proj)}
+                      ondatechange={setItemDate}
+                      onpromote={(p, proj, d) => void promote(p, proj, d)}
                       onreject={(p, t) => void reject(p, t)}
                     />
                   </div>

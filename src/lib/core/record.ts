@@ -71,6 +71,10 @@ export interface PromoteOverrides {
   /** Project slug to affiliate the entry with. An empty string clears any
    * suggested affiliation; `undefined` leaves the candidate's value untouched. */
   project?: string;
+  /** Supply or correct the event date (YYYY-MM-DD). REQUIRED to promote a
+   * candidate staged without one (needs_date). An empty string is treated as
+   * "no date provided" and will not satisfy the gate. */
+  date?: string;
 }
 
 /** The candidate inbox (ingest-reduce plan §1): staged-but-unreviewed ingested
@@ -408,6 +412,28 @@ export class RecordStore {
       if (project) fm.project = project;
       else delete fm.project;
     }
+
+    // --- Date gate (allow-undated-imports spec §C) --------------------------
+    // Apply an explicit date override first…
+    if (overrides.date !== undefined) {
+      const d = overrides.date.trim();
+      if (d && !/^\d{4}-\d{2}-\d{2}$/.test(d)) {
+        throw new Error(`Invalid date "${d}" — use YYYY-MM-DD`);
+      }
+      if (d) fm.date = d;
+    }
+    // …then enforce: a real, valid date is required to enter the record. A valid
+    // date supersedes and clears the needs-date marker; its absence blocks the
+    // promote (we NEVER default to today — résumé spec §8 / brutal accuracy).
+    const hasValidDate =
+      typeof fm.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(fm.date);
+    if (hasValidDate) {
+      delete (fm as Record<string, unknown>).needs_date;
+    } else {
+      throw new Error('This candidate has no date yet — set its date before promoting.');
+    }
+    // ------------------------------------------------------------------------
+
     const next = touchEntry({ ...candidate, frontmatter: fm });
     const newPath = expectedPath(next);
     await this.writeEntryFile({ ...next, path: newPath });

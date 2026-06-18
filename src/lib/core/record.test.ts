@@ -227,6 +227,66 @@ describe('project dimension (plan §2)', () => {
     expect(affiliated.map((e) => e.frontmatter.id)).toContain(promoted.frontmatter.id);
   });
 
+  it('promote blocks an undated candidate, leaving it in the inbox (spec §C)', async () => {
+    const candidate = makeEntry({
+      type: 'role',
+      title: 'Intern — Acme',
+      date: '',
+      private: true,
+      extra: { source: 'resume', source_id: 'role:acme::intern:', needs_date: true }
+    });
+    const staged = await store.stageCandidate(candidate);
+    await expect(store.promoteCandidate(staged.path!)).rejects.toThrow(/no date/i);
+    // The candidate file survives, and nothing was written to entries/.
+    expect(await platform.fs.exists(join(root, staged.path!))).toBe(true);
+    expect(await store.listEntries({ includePrivate: true })).toHaveLength(0);
+  });
+
+  it('promote with a date override succeeds and clears the needs_date marker', async () => {
+    const candidate = makeEntry({
+      type: 'role',
+      title: 'Intern — Acme',
+      date: '',
+      private: true,
+      extra: { source: 'resume', source_id: 'role:acme::intern2:', needs_date: true }
+    });
+    const staged = await store.stageCandidate(candidate);
+    const promoted = await store.promoteCandidate(staged.path!, { date: '2021-06-01' });
+    expect(promoted.frontmatter.date).toBe('2021-06-01');
+    expect(promoted.path!.startsWith('entries/2021-06-01-')).toBe(true);
+    expect('needs_date' in promoted.frontmatter).toBe(false);
+    expect(await platform.fs.exists(join(root, staged.path!))).toBe(false);
+  });
+
+  it('promote rejects a malformed date override', async () => {
+    const candidate = makeEntry({
+      type: 'role',
+      title: 'Intern — Acme',
+      date: '',
+      private: true,
+      extra: { source: 'resume', source_id: 'role:acme::intern3:', needs_date: true }
+    });
+    const staged = await store.stageCandidate(candidate);
+    await expect(store.promoteCandidate(staged.path!, { date: 'June 2021' })).rejects.toThrow(
+      /Invalid date/
+    );
+  });
+
+  it('a normal dated candidate promotes unchanged (regression)', async () => {
+    const candidate = makeEntry({
+      type: 'journal',
+      title: 'Fixed the build',
+      date: '2024-05-01',
+      private: true,
+      extra: { source: 'github', source_id: 'gh-dated', reviewed: false }
+    });
+    const staged = await store.stageCandidate(candidate);
+    const promoted = await store.promoteCandidate(staged.path!);
+    expect(promoted.frontmatter.date).toBe('2024-05-01');
+    expect('needs_date' in promoted.frontmatter).toBe(false);
+    expect(promoted.frontmatter.reviewed).toBe(true);
+  });
+
   it('an empty project override clears a suggested affiliation on promote', async () => {
     const candidate = makeEntry({
       type: 'journal',

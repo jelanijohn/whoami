@@ -24,6 +24,9 @@ export interface ParseResumeOpts {
   /** `provider:model` label, advisory — the `Llm` client already carries its
    * own model; kept for parity with the triage call site (spec §6). */
   model?: string;
+  /** Carry items the parser can't date instead of dropping them (allow-undated
+   * spec §A). Default false ⇒ today's behavior. */
+  allowUndated?: boolean;
 }
 
 export interface ParseResumeResult {
@@ -51,7 +54,7 @@ export async function parseResume(
       const raw = await llm.complete(buildResumePrompt(chunks[i]));
       // Validate excerpts against the FULL résumé, not just this chunk, so a
       // span that reflowed across a chunk boundary still verifies.
-      parsed = parseResumeItems(raw, text, errors);
+      parsed = parseResumeItems(raw, text, errors, { allowUndated: opts.allowUndated });
     } catch (e) {
       errors.push(`chunk ${i + 1}/${chunks.length} failed: ${String(e)}`);
       continue;
