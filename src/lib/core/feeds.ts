@@ -15,14 +15,22 @@ import type { IngestReport, IngestSource } from './ingest/types';
 /** The ingest sources that can be saved as a feed. LinkedIn and Résumé are
  * inherently interactive file-dialog imports and do not participate (spec §11);
  * this is the {@link IngestSource} subset feeds use. */
-export type FeedKind = 'github' | 'asana' | 'gmail' | 'claude-code' | 'warp' | 'website';
+export type FeedKind =
+  | 'github'
+  | 'asana'
+  | 'gmail'
+  | 'claude-code'
+  | 'warp'
+  | 'neuroskill'
+  | 'website';
 
-/** The two local picker sources. They are ALWAYS prefilter-only + private
- * (spec §5.2): the chat-history sensitivity rule is not overridable per feed. */
-const PICKER_KINDS: ReadonlySet<FeedKind> = new Set(['claude-code', 'warp']);
+/** The local picker sources. They are ALWAYS prefilter-only + private (spec
+ * §5.2; neuroskill spec R4/R5): the sensitivity rule is not overridable per
+ * feed. */
+const PICKER_KINDS: ReadonlySet<FeedKind> = new Set(['claude-code', 'warp', 'neuroskill']);
 
-/** True for the local picker kinds (claude-code/warp) whose LLM-triage and
- * privacy flags are forced (spec §5.2). */
+/** True for the local picker kinds (claude-code/warp/neuroskill) whose
+ * LLM-triage and privacy flags are forced (spec §5.2; neuroskill R4/R5). */
 export function isPickerKind(kind: FeedKind): boolean {
   return PICKER_KINDS.has(kind);
 }
@@ -112,6 +120,8 @@ export interface FeedFormInput {
   roots?: string[];
   /** warp: the working_directory strings. */
   dirs?: string[];
+  /** neuroskill: the NeuroSkill data directory (holds activity/labels.sqlite). */
+  dataDir?: string;
   /** The github form's `importPrivate`; ignored for other kinds. */
   importPrivate?: boolean;
   /** `importSettings.triage.useLlm` at save time; ignored for picker kinds. */
@@ -136,6 +146,9 @@ export function buildFeed(input: FeedFormInput): Feed {
   }
   if (input.kind === 'warp') {
     return withFeedDefaults({ ...base, params: { dirs: input.dirs ?? [] } });
+  }
+  if (input.kind === 'neuroskill') {
+    return withFeedDefaults({ ...base, params: { dataDir: input.dataDir ?? '' } });
   }
   return withFeedDefaults({
     ...base,

@@ -62,6 +62,10 @@ export interface TriageRubric {
   /** Natural-language definition of "frivolous", fed to the optional LLM pass's
    * SYSTEM prompt (the owner's notion drives the call, spec §5). */
   frivolousCriteria: string;
+  /** NeuroSkill: minimum session length (minutes) to count as `keep`; shorter →
+   *  `frivolous` (calibration blips). Owner-editable; persists in importSettings
+   *  (never the record repo). */
+  neuroskillMinMinutes: number;
 }
 
 /** Shipped defaults (spec §4 pattern lists). The owner can override any field
@@ -126,5 +130,6 @@ export const DEFAULT_RUBRIC: TriageRubric = {
     'reflects real work, a decision, a shipped change, a substantive conversation, or ' +
     'anything a person would want to remember about their career. When genuinely ' +
     'ambiguous, prefer keep — a wrongly-kept item costs one manual reject, a wrongly-' +
-    'discarded one buries a real memory.'
+    'discarded one buries a real memory.',
+  neuroskillMinMinutes: 5
 };

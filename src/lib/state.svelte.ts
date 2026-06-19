@@ -30,6 +30,9 @@ import {
   warpProjectName,
   type WarpQueryRow,
   type WarpConversationMeta,
+  importNeuroskillSessions,
+  type NeuroskillEpochRow,
+  type NeuroskillLabelRow,
   parseResume,
   acquireWebsite,
   parseWebsite,
@@ -157,6 +160,10 @@ export interface ImportSettings {
   /** Résumé import: the only persisted résumé setting today — carry roles/wins
    * the parser can't date into the inbox (allow-undated spec §D). */
   resume: { allowUndated: boolean };
+  /** NeuroSkill import (neuroskill spec §7): the data directory holding
+   * `activity.sqlite` + `labels.sqlite`. A stable local path, so it persists
+   * here for convenience; never hardcoded. */
+  neuroskill: { dataDir: string };
   /** Triage settings (spec §6): the per-import LLM flag (off by default) plus
    * optional rubric overrides. Persisted here (localStorage), never the record. */
   triage: { useLlm: boolean; rubric?: Partial<TriageRubric> };
@@ -182,6 +189,7 @@ export const DEFAULT_IMPORT_SETTINGS: ImportSettings = {
   gmail: { query: '', limit: 25 },
   website: { urls: '', sitemapUrl: '', maxPages: '25', allowUndated: false },
   resume: { allowUndated: false },
+  neuroskill: { dataDir: '' },
   triage: { useLlm: false }
 };
 
@@ -299,6 +307,7 @@ class AppState {
             gmail: { ...DEFAULT_IMPORT_SETTINGS.gmail, ...p.gmail },
             website: { ...DEFAULT_IMPORT_SETTINGS.website, ...p.website },
             resume: { ...DEFAULT_IMPORT_SETTINGS.resume, ...p.resume },
+            neuroskill: { ...DEFAULT_IMPORT_SETTINGS.neuroskill, ...p.neuroskill },
             triage: { ...DEFAULT_IMPORT_SETTINGS.triage, ...p.triage }
           };
         } catch {
@@ -1167,6 +1176,76 @@ class AppState {
   }
 
   /**
+   * NeuroSkill EEG-session import (neuroskill spec §7): zero-auth, import-only,
+   * all-SQLite. Reads `eeg_timeseries` (from `activity.sqlite`) and `labels`
+   * (from `labels.sqlite`) read-only, segments past sessions, and hands the rows
+   * to the pure core mapper — one session = one candidate.
+   *
+   * Brain-state is the most private source here (spec R5): every candidate is
+   * staged `private: true` and runs **prefilter-only** — it never reaches a cloud
+   * triage model. Both DBs are opened `mode=ro&immutable=1`, so the live
+   * NeuroSkill daemon's locks are never touched, and ONLY the two §7 SELECTs are
+   * ever run (spec R1). `labels.sqlite` is enrichment: if it is missing or
+   * unopenable the import proceeds with no labels.
+   */
+  async importNeuroskill(dataDir: string, project?: string): Promise<IngestReport | null> {
+    return this.guard(async () => {
+      if (!this.store || !this.platform) throw new Error('Open a record folder first');
+      if (!this.platform.openDatabase) {
+        throw new Error('External database access is not available on this platform');
+      }
+      const dir = dataDir.trim();
+      if (!dir) throw new Error('Enter the NeuroSkill data directory first');
+
+      const activityPath = this.platform.joinPath(dir, 'activity.sqlite');
+      const labelsPath = this.platform.joinPath(dir, 'labels.sqlite');
+
+      // eeg_timeseries — the only statement run against activity.sqlite (R1).
+      const activity = await this.platform.openDatabase(activityPath);
+      let epochRows: NeuroskillEpochRow[];
+      try {
+        epochRows = (await activity.select(
+          `SELECT ts, metrics FROM eeg_timeseries ORDER BY ts`
+        )) as unknown as NeuroskillEpochRow[];
+      } finally {
+        await activity.close();
+      }
+
+      // labels — the only statement run against labels.sqlite (R1). Enrichment:
+      // a missing/unopenable labels DB is non-fatal (proceed with no labels).
+      let labelRows: NeuroskillLabelRow[] = [];
+      try {
+        const labelsDb = await this.platform.openDatabase(labelsPath);
+        try {
+          labelRows = (await labelsDb.select(
+            `SELECT id, text, context, eeg_start, eeg_end, wall_start, wall_end, label_start, label_end
+               FROM labels`
+          )) as unknown as NeuroskillLabelRow[];
+        } finally {
+          await labelsDb.close();
+        }
+      } catch {
+        // labels.sqlite is optional enrichment — proceed with labelRows = [].
+      }
+
+      const items = importNeuroskillSessions(epochRows, labelRows);
+      if (items.length === 0) throw new Error('No NeuroSkill sessions found in eeg_timeseries');
+      const fresh = await selectNewItems(this.store, items);
+      const signals = await this.triageFresh(fresh, false);
+      const report = await stageItems(this.store, items, {
+        signals,
+        private: true,
+        project: project ?? this.importProject
+      });
+      this.lastImportReport = report;
+      await this.loadCandidates();
+      const known = report.skippedPromoted + report.skippedRejected;
+      this.message = `neuroskill: staged ${report.staged}, ${known} already known${report.errors.length ? `, ${report.errors.length} errors` : ''}`;
+      return report;
+    });
+  }
+
+  /**
    * Résumé import (résumé spec §6): a .pdf/.docx → LLM parse → candidate inbox.
    * The LLM is MANDATORY here — arbitrary résumé prose has no deterministic
    * parse — so with no document reader or no provider the action refuses rather
@@ -1329,6 +1408,7 @@ class AppState {
         : undefined,
       roots: kind === 'claude-code' ? $state.snapshot(this.claudeCodeSelected) : undefined,
       dirs: kind === 'warp' ? $state.snapshot(this.warpSelected) : undefined,
+      dataDir: kind === 'neuroskill' ? this.importSettings.neuroskill.dataDir : undefined,
       importPrivate: this.importSettings.github.importPrivate,
       useLlm: this.importSettings.triage.useLlm
     });
@@ -1353,6 +1433,9 @@ class AppState {
     } else if (feed.kind === 'warp') {
       const dirs = Array.isArray(feed.params.dirs) ? (feed.params.dirs as string[]) : [];
       report = await this.importWarp(dirs, feed.project);
+    } else if (feed.kind === 'neuroskill') {
+      const dataDir = typeof feed.params.dataDir === 'string' ? feed.params.dataDir : '';
+      report = await this.importNeuroskill(dataDir, feed.project);
     } else {
       const params = effectiveLiveParams(feed);
       const over = { useLlmTriage: feed.useLlm, private: feed.private, project: feed.project };

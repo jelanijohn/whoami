@@ -71,6 +71,7 @@ describe('withFeedDefaults (spec §4.1.1, §10.1, §10.5)', () => {
   it('identifies picker kinds', () => {
     expect(isPickerKind('claude-code')).toBe(true);
     expect(isPickerKind('warp')).toBe(true);
+    expect(isPickerKind('neuroskill')).toBe(true);
     expect(isPickerKind('github')).toBe(false);
     expect(isPickerKind('asana')).toBe(false);
     expect(isPickerKind('gmail')).toBe(false);
@@ -144,6 +145,20 @@ describe('buildFeed (spec §4.2.4, §10.4)', () => {
   it('shapes warp params as { dirs } and forces picker flags', () => {
     const feed = buildFeed({ id: 'w', label: 'wp', kind: 'warp', project: '', dirs: ['/home/x'] });
     expect(feed.params).toEqual({ dirs: ['/home/x'] });
+    expect(feed.private).toBe(true);
+    expect(feed.useLlm).toBe(false);
+  });
+
+  it('shapes neuroskill params as { dataDir } and forces picker flags (spec §6)', () => {
+    const feed = buildFeed({
+      id: 'n',
+      label: 'ns',
+      kind: 'neuroskill',
+      project: '',
+      dataDir: '/mnt/c/Users/x/AppData/Local/NeuroSkill',
+      useLlm: true
+    });
+    expect(feed.params).toEqual({ dataDir: '/mnt/c/Users/x/AppData/Local/NeuroSkill' });
     expect(feed.private).toBe(true);
     expect(feed.useLlm).toBe(false);
   });

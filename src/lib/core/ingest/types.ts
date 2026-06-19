@@ -22,6 +22,7 @@ export type IngestSource =
   | 'resume'
   | 'claude-code'
   | 'warp'
+  | 'neuroskill'
   | 'website';
 
 /** A normalized item from any provider — the common shape every `map*`

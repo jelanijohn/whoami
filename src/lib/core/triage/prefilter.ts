@@ -55,6 +55,16 @@ function prefilterGithub(item: RawItem, rubric: TriageRubric): PrefilterOutcome 
   return unsure();
 }
 
+/** NeuroSkill — a tracked focus session; only calibration blips shorter than
+ * the owner's threshold are frivolous (neuroskill spec §5.2). An item with no
+ * usable `meta.duration_min` is kept (never wrongly buried). */
+function prefilterNeuroskill(item: RawItem, rubric: TriageRubric): PrefilterOutcome {
+  const min = Number.isFinite(rubric.neuroskillMinMinutes) ? rubric.neuroskillMinMinutes : 5;
+  const mins = Number(item.meta?.duration_min);
+  if (Number.isFinite(mins) && mins < min) return frivolous('short session (calibration/blip)');
+  return keep('tracked focus session');
+}
+
 /** Asana — a boilerplate title wins over a completed status (spec §4). */
 function prefilterAsana(item: RawItem, rubric: TriageRubric): PrefilterOutcome {
   if (matches(item.title ?? '', rubric.asanaBoilerplate)) return frivolous('routine/boilerplate task');
@@ -75,6 +85,8 @@ export function prefilterItem(item: RawItem, rubric: TriageRubric): PrefilterOut
       return prefilterGithub(item, rubric);
     case 'asana':
       return prefilterAsana(item, rubric);
+    case 'neuroskill':
+      return prefilterNeuroskill(item, rubric);
     case 'linkedin':
       return keep('profile/archive record');
     default:

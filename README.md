@@ -39,8 +39,8 @@ src/lib/core/        Framework-agnostic TypeScript core (no Tauri, no browser).
   git.ts               Explicit Sync (pull --rebase / add / commit / push).
   feeds.ts             Saved, re-runnable import configs (machine-local) + refresh.
   ingest/              Provider adapters (GitHub, Asana, Gmail, LinkedIn,
-                         résumé, your own website, Claude Code, Warp) →
-                         candidates in the inbox.
+                         résumé, your own website, Claude Code, Warp,
+                         NeuroSkill EEG sessions) → candidates in the inbox.
   triage/              Prefilter + optional LLM pass: a keep|frivolous sort
                          signal; never deletes or auto-rejects.
   reduce/              Optional LLM map/reduce: roll a noisy inbox into drafts.
@@ -69,7 +69,7 @@ src-tauri/           Rust shell: registers the fs/sql/shell/dialog/http plugins.
 The core never imports Tauri. The Tauri frontend and the test harness each
 supply a `Platform` (filesystem, SQLite, git runner, hash, plus optional HTTP +
 keyring seams for ingest and the LLM, and a read-only external-SQLite seam used to
-read another app's database for Warp import) — so the storage and ingest logic is
+read another app's database for Warp and NeuroSkill import) — so the storage and ingest logic is
 fully unit-testable off-device, and a CLI could wrap the same core.
 
 ### How a record folder is used
@@ -88,15 +88,20 @@ sources and help you shape it — but **nothing reaches the record without your
 explicit promote.**
 
 - **Ingest** (`src/lib/core/ingest/`) — adapters for GitHub, Asana, Gmail,
-  LinkedIn, an imported résumé, your own personal website, and your Claude Code
-  and Warp AI history map provider data into normalized items, landing them as
+  LinkedIn, an imported résumé, your own personal website, your Claude Code
+  and Warp AI history, and your NeuroSkill EEG focus sessions map provider data
+  into normalized items, landing them as
   *candidates in a review inbox* (never the record). Mappers are pure and
   fixture-tested; the layer never touches the record, secrets, or the index
   directly. The GitHub adapter imports either the issues & PRs you authored or, per
   run, a repo's commits you authored (change-size counts and your message — never
   the diff). The website importer fetches only the pages you enter (and a sitemap
   you point at) — it is not a crawler — and treats the polished prose as a prompt
-  to write the rawer truth underneath. An item that arrives without a real date is
+  to write the rawer truth underneath. The NeuroSkill importer reads past EEG
+  sessions from another app's local SQLite (read-only, `eeg_timeseries` + `labels`
+  only) into one dated journal candidate each — focus/engagement means and a
+  peak-focus window — always private and prefilter-only, with short calibration
+  blips flagged frivolous. An item that arrives without a real date is
   staged as *needs-date*: you set its date in the inbox before promoting — the app
   never silently defaults it to today (brutal accuracy).
 - **Triage** (`src/lib/core/triage/`) — a deterministic prefilter that always
@@ -104,7 +109,7 @@ explicit promote.**
   `keep | frivolous` sort signal. It only sorts: never deletes, hides, or
   auto-rejects, and the signal is stripped on promote.
 - **Feeds** (`src/lib/core/feeds.ts`) — save a configured source (GitHub, Asana,
-  Gmail, website, Claude Code, or Warp) as a re-runnable *feed*, then **Refresh all** to
+  Gmail, website, Claude Code, Warp, or NeuroSkill) as a re-runnable *feed*, then **Refresh all** to
   re-pull every one in a click. Feeds are machine-local (localStorage, never the
   record — tokens stay in the keyring), and re-running only stages what's new.
   Inbox-only like every import; nothing is auto-promoted.

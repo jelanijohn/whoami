@@ -160,6 +160,7 @@
     { id: 'gmail', name: 'Gmail', glyph: 'mail', sub: 'Subjects & snippets only', cat: 'connected' },
     { id: 'claude-code', name: 'Claude Code', glyph: 'terminal', sub: 'Session history · ~/.claude/projects', cat: 'local' },
     { id: 'warp', name: 'Warp', glyph: 'bolt', sub: 'Agent-mode history · warp.sqlite', cat: 'local' },
+    { id: 'neuroskill', name: 'NeuroSkill', glyph: 'activity', sub: 'EEG focus sessions · activity.sqlite', cat: 'local' },
     { id: 'linkedin', name: 'LinkedIn', glyph: 'work', sub: 'CSV data export', cat: 'archive' },
     { id: 'resume', name: 'Résumé', glyph: 'description', sub: 'PDF / DOCX', cat: 'archive' },
     { id: 'website', name: 'Website (your own)', glyph: 'language', sub: 'Public pages · sitemap or URLs', cat: 'archive' }
@@ -935,6 +936,45 @@
                   {/if}
                 {/snippet}
                 {@render bodyOpen(warpBody)}
+              {:else if s.id === 'neuroskill'}
+                {#snippet neuroskillBody()}
+                  <p class="text-xs text-[var(--color-muted)]">
+                    Zero-auth, import-only, all-SQLite. Reads your past EEG sessions from NeuroSkill's
+                    <code>activity.sqlite</code> (and optional <code>labels.sqlite</code>) and stages one
+                    candidate per focus session — a dated, state-while-working snapshot (focus, engagement,
+                    mood, a peak-focus window). One session = one candidate. Only
+                    <code>eeg_timeseries</code> and <code>labels</code> are ever read.
+                  </p>
+                  <p class="flex items-start gap-1.5 text-xs text-[var(--color-private)]">
+                    <span class="flex-none pt-px"><Icon name="lock" size={14} /></span>
+                    <span>
+                      Brain-state is the most private source here, so it never touches the cloud: a local
+                      prefilter runs (no LLM triage), short sessions below your threshold are flagged as
+                      calibration blips, and every candidate is private by default until you promote it. The
+                      NeuroSkill databases are opened read-only.
+                    </span>
+                  </p>
+                  <label class="flex flex-col text-xs text-[var(--color-muted)]">
+                    Data directory (holds <code>activity.sqlite</code> + <code>labels.sqlite</code>)
+                    <input
+                      bind:value={app.importSettings.neuroskill.dataDir}
+                      placeholder="e.g. /mnt/c/Users/you/AppData/Local/NeuroSkill"
+                      class="{inputCls} w-full max-w-xl font-mono"
+                    />
+                  </label>
+                  <div class="flex flex-wrap items-center gap-2 border-t border-dashed border-[var(--color-line)] pt-3">
+                    <button
+                      class={runCls}
+                      disabled={app.busy || !app.importSettings.neuroskill.dataDir.trim()}
+                      onclick={() => { persist(); app.importNeuroskill(app.importSettings.neuroskill.dataDir); }}
+                    >
+                      <Icon name="download" size={17} />
+                      Import sessions
+                    </button>
+                  </div>
+                  {@render saveAsFeedRow('neuroskill')}
+                {/snippet}
+                {@render bodyOpen(neuroskillBody)}
               {:else if s.id === 'linkedin'}
                 {#snippet linkedinBody()}
                   <p class="text-xs text-[var(--color-muted)]">

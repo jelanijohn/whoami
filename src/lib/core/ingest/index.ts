@@ -107,4 +107,18 @@ export {
   type WarpConversationMeta,
   type WarpTurn
 } from './warp';
+export {
+  NEUROSKILL_SOURCE,
+  NEUROSKILL_GAP_SECONDS,
+  NEUROSKILL_PEAK_WINDOW_EPOCHS,
+  NEUROSKILL_METRIC_KEYS,
+  defaultDateParts,
+  segmentSessions,
+  mapNeuroskillSession,
+  importNeuroskillSessions,
+  type NeuroskillEpochRow,
+  type NeuroskillLabelRow,
+  type NeuroskillSession,
+  type DateParts
+} from './neuroskill';
 export { rawItemToEntryInput, stageItems, selectNewItems } from './pipeline';
