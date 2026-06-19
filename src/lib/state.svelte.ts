@@ -127,6 +127,12 @@ export interface ImportSettings {
     commentScope: 'self' | 'all';
     /** Blank ⇒ omit ⇒ adapter default (2000). Stored as a string for the input. */
     discussionCharCap: string;
+    /** 'items' (default) = issues & PRs; 'commits' = repo commits (commits spec). */
+    mode: 'items' | 'commits';
+    /** Commit mode: branch to read ('' ⇒ default branch). */
+    branch: string;
+    /** Commit mode: drop merge commits (default true). */
+    excludeMerges: boolean;
     /** Stage candidates as `private: true` (default). Unchecking stages them
      * public from the start — the user's deliberate opt-out of the protective
      * default for this source. */
@@ -167,6 +173,9 @@ export const DEFAULT_IMPORT_SETTINGS: ImportSettings = {
     fetchDiscussion: false,
     commentScope: 'self',
     discussionCharCap: '',
+    mode: 'items',
+    branch: '',
+    excludeMerges: true,
     importPrivate: true
   },
   asana: { workspace: '', project: '', since: '', until: '', includeCompleted: true, limit: 100 },
@@ -1377,7 +1386,10 @@ class AppState {
       baseUrl: String(p.baseUrl ?? '').trim() || undefined,
       fetchDiscussion: !!p.fetchDiscussion,
       commentScope: (p.commentScope as 'self' | 'all') ?? 'self',
-      discussionCharCap: cap && Number.isFinite(cap) && cap > 0 ? cap : undefined
+      discussionCharCap: cap && Number.isFinite(cap) && cap > 0 ? cap : undefined,
+      mode: (p.mode as 'items' | 'commits') ?? 'items',
+      branch: String(p.branch ?? '').trim() || undefined,
+      excludeMerges: p.excludeMerges === undefined ? true : !!p.excludeMerges
     };
   }
 

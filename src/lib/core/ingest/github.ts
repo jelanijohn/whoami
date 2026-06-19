@@ -48,6 +48,14 @@ export interface GithubFetchOpts {
   /** Char cap on the composed **discussion** section, per item. Default 2000.
    *  The description (change A) is NEVER capped by this. */
   discussionCharCap?: number;
+
+  /** 'items' (default) = authored issues & PRs (today's path). 'commits' =
+   *  authored commits on one repo's branch (D1–D6). */
+  mode?: 'items' | 'commits';
+  /** Commit mode only: branch to read history from. Blank ⇒ the default branch. */
+  branch?: string;
+  /** Commit mode only: drop merge commits (parents > 1). Default true (D5). */
+  excludeMerges?: boolean;
 }
 
 export const DEFAULT_COMMENT_SCOPE: 'self' | 'all' = 'self';
@@ -169,6 +177,171 @@ export function mapGithubGraphqlNode(node: unknown): RawItem {
   };
 }
 
+/** Map one GraphQL commit `history` node into a RawItem. Pure — fixture-tested.
+ * The commit node carries no repository, so `repo` (`owner/name`) is passed in
+ * from opts. Imports metadata + the verbatim message + change-size counts only;
+ * NEVER the diff (commits spec §1.2, D4). */
+export function mapGithubCommitNode(node: unknown, repo: string): RawItem {
+  const oid = asStr(get(node, 'oid')) ?? '';
+  const headline = asStr(get(node, 'messageHeadline')) ?? '';
+  const date = isoDate(get(node, 'authoredDate')) ?? '';
+  const additions = asNum(get(node, 'additions')) ?? 0;
+  const deletions = asNum(get(node, 'deletions')) ?? 0;
+  const changedFiles = asNum(get(node, 'changedFilesIfAvailable')) ?? 0;
+  const parents = asNum(get(node, 'parents', 'totalCount')) ?? 0;
+
+  // Mirrors the PR body idiom (filter(Boolean).join('\n')); these are our own
+  // computed facts, not verbatim provider text.
+  let body = [
+    `GitHub commit in ${repo}.`,
+    `SHA: ${oid.slice(0, 7)}.`,
+    `Authored: ${date}.`,
+    `Changes: +${additions} −${deletions} across ${changedFiles} files.`
+  ]
+    .filter(Boolean)
+    .join('\n');
+  // The verbatim message body rides as a fenced block — the headline is already
+  // the title, so it is not duplicated here.
+  const message = asStr(get(node, 'messageBody'))?.trim();
+  if (message) body += `\n\n--- Message ---\n${message}`;
+
+  return {
+    source: 'github',
+    sourceId: oid,
+    title: headline,
+    date,
+    url: asStr(get(node, 'url')),
+    body,
+    suggestedType: 'journal',
+    suggestedTags: ['github', 'commit'],
+    suggestedProject: slugify(repo),
+    meta: { type: 'commit', repo, parents: String(parents) },
+    extraFrontmatter: {
+      change_size: { additions, deletions, changed_files: changedFiles },
+      commit_sha: oid
+    }
+  };
+}
+
+/** Build the commit-history GraphQL query (pure — unit-tested). `hasBranch`
+ * picks the ref selector: false ⇒ `defaultBranchRef`, true ⇒ `ref($ref)` with
+ * `$ref` = `refs/heads/<branch>`. Both share the `... on Commit { history }`
+ * body. `changedFilesIfAvailable` (not the deprecated `changedFiles`) carries
+ * change size in the same query — no N+1 (D1). */
+export function commitsQuery(hasBranch: boolean): string {
+  const inner = `target {
+        ... on Commit {
+          history(author: { id: $authorId }, since: $since, until: $until, first: $first, after: $cursor) {
+            pageInfo { hasNextPage endCursor }
+            nodes {
+              oid messageHeadline messageBody authoredDate committedDate url
+              additions deletions changedFilesIfAvailable
+              parents { totalCount }
+            }
+          }
+        }
+      }`;
+  const refSelector = hasBranch
+    ? `ref(qualifiedName: $ref) { ${inner} }`
+    : `defaultBranchRef { ${inner} }`;
+  const sig = hasBranch
+    ? `query CommitHistory($owner: String!, $name: String!, $ref: String!, $authorId: ID!, $since: GitTimestamp, $until: GitTimestamp, $first: Int!, $cursor: String)`
+    : `query CommitHistory($owner: String!, $name: String!, $authorId: ID!, $since: GitTimestamp, $until: GitTimestamp, $first: Int!, $cursor: String)`;
+  return `${sig} {
+  repository(owner: $owner, name: $name) {
+    ${refSelector}
+  }
+  rateLimit { cost remaining resetAt }
+}`;
+}
+
+/** Resolve a GitHub login to its `User` node id — the `history(author:)` filter
+ * takes a `CommitAuthor { id }`, not a login (D-note §2). One cheap call. */
+const RESOLVE_USER_QUERY = `query ResolveUser($login: String!) {
+  user(login: $login) { id }
+  rateLimit { cost remaining resetAt }
+}`;
+
+/** Convert a `YYYY-MM-DD` bound to a `GitTimestamp`, or null when absent (§2). */
+function gitTimestamp(date: string | undefined, end: boolean): string | null {
+  if (!date) return null;
+  return end ? `${date}T23:59:59Z` : `${date}T00:00:00Z`;
+}
+
+/** Fetch authored commits on one repo's branch over the GraphQL `history`
+ * connection (D1). Deterministic: no LLM, no diff — counts + the verbatim
+ * message only. */
+async function fetchGithubCommits(http: Http, opts: GithubFetchOpts): Promise<RawItem[]> {
+  const repo = (opts.repo ?? '').trim();
+  const [owner, name] = repo.split('/');
+  if (!owner || !name) throw new Error('commit import needs a repo (owner/name)');
+
+  const gqlUrl = graphqlUrl(opts.baseUrl);
+  const gqlHeaders = bearer(opts.token, { 'Content-Type': 'application/json', 'User-Agent': 'whoami' });
+
+  const throwOnErrors = (parsed: unknown): void => {
+    const errors = get(parsed, 'errors');
+    if (Array.isArray(errors) && errors.length > 0) {
+      const msg = asStr(get(errors[0], 'message')) ?? JSON.stringify(errors[0]);
+      throw new Error(`GitHub GraphQL error: ${msg}`);
+    }
+  };
+
+  // 1. Resolve the author login → node id (cannot be done inline; see §2).
+  const resolved = await postJson(
+    http,
+    gqlUrl,
+    gqlHeaders,
+    { query: RESOLVE_USER_QUERY, variables: { login: opts.user } },
+    'GitHub'
+  );
+  throwOnErrors(resolved);
+  const authorId = asStr(get(resolved, 'data', 'user', 'id'));
+  if (!authorId) throw new Error(`couldn't resolve GitHub user '${opts.user}'`);
+
+  // 2. Paginate history under the cap (same shape as the items loop).
+  const cap = Math.min(Math.max(opts.limit ?? 50, 1), 300);
+  const first = Math.min(cap, 100);
+  const branch = (opts.branch ?? '').trim();
+  const hasBranch = branch.length > 0;
+  const query = commitsQuery(hasBranch);
+  const since = gitTimestamp(opts.since, false);
+  const until = gitTimestamp(opts.until, true);
+  const excludeMerges = opts.excludeMerges !== false; // default true
+
+  const items: RawItem[] = [];
+  let cursor: string | null = null;
+  for (;;) {
+    const variables: Record<string, unknown> = { owner, name, authorId, since, until, first, cursor };
+    if (hasBranch) variables.ref = `refs/heads/${branch}`;
+    const parsed = await postJson(http, gqlUrl, gqlHeaders, { query, variables }, 'GitHub');
+    throwOnErrors(parsed);
+
+    const repository = get(parsed, 'data', 'repository');
+    if (repository == null) throw new Error(`repository ${repo} not found or no access`);
+    const refNode = hasBranch ? get(repository, 'ref') : get(repository, 'defaultBranchRef');
+    if (hasBranch && refNode == null) throw new Error(`branch '${branch}' not found in ${repo}`);
+    // No default branch (empty repo), no target, or no commits in window: not an error.
+    const history = get(refNode, 'target', 'history');
+    const nodes = get(history, 'nodes');
+    if (!Array.isArray(nodes)) return items;
+
+    for (const node of nodes) {
+      // The only acquisition-side filter (D5/§1.6): structural, user-visible.
+      const parents = asNum(get(node, 'parents', 'totalCount')) ?? 0;
+      if (excludeMerges && parents > 1) continue;
+      items.push(mapGithubCommitNode(node, repo));
+      if (items.length >= cap) break;
+    }
+    if (items.length >= cap) break;
+    if (get(history, 'pageInfo', 'hasNextPage') !== true) break;
+    const endCursor = asStr(get(history, 'pageInfo', 'endCursor'));
+    if (!endCursor) break;
+    cursor = endCursor;
+  }
+  return items;
+}
+
 /** One normalized discussion line — a comment, review comment, or review. */
 export interface DiscussionEntry {
   author: string;
@@ -267,6 +440,9 @@ async function fetchItemDiscussion(
 /** Fetch authored issues/PRs in a date range over the GraphQL `search`
  * connection, following the cursor while under the cap. */
 export async function fetchGithub(http: Http, opts: GithubFetchOpts): Promise<RawItem[]> {
+  // Commit mode returns early — the discussion block below is unreachable, so
+  // D6 (no commit-comment fetching) holds with no extra guard.
+  if (opts.mode === 'commits') return fetchGithubCommits(http, opts);
   const cap = Math.min(Math.max(opts.limit ?? 50, 1), 300);
   const first = Math.min(cap, 100);
   const q = githubSearchQuery(opts); // NOT percent-encoded — rides `variables`.

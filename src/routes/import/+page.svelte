@@ -85,7 +85,10 @@
       baseUrl: g.baseUrl.trim() || undefined,
       fetchDiscussion: g.fetchDiscussion,
       commentScope: g.commentScope,
-      discussionCharCap: cap && Number.isFinite(cap) && cap > 0 ? cap : undefined
+      discussionCharCap: cap && Number.isFinite(cap) && cap > 0 ? cap : undefined,
+      mode: g.mode,
+      branch: g.branch.trim() || undefined,
+      excludeMerges: g.excludeMerges
     });
   }
 
@@ -629,15 +632,36 @@
                     with <code>repo</code> read scope works.
                   </p>
                   {@render tokenRow('github', 'ghp_…')}
+                  <div class="inline-flex gap-0.5 rounded-[11px] border border-[var(--color-line)] bg-white p-[3px] dark:bg-[var(--color-bar)]">
+                    {#each [['items', 'Issues & PRs'], ['commits', 'Commits']] as [value, label] (value)}
+                      <button
+                        onclick={() => (app.importSettings.github.mode = value as 'items' | 'commits')}
+                        class="rounded-lg px-[13px] py-[6px] text-[13px] transition-all duration-100"
+                        class:font-semibold={app.importSettings.github.mode === value}
+                        class:font-medium={app.importSettings.github.mode !== value}
+                        style={app.importSettings.github.mode === value
+                          ? 'background:var(--color-accent);color:#fff;'
+                          : 'background:transparent;color:var(--color-muted);'}
+                      >
+                        {label}
+                      </button>
+                    {/each}
+                  </div>
                   <div class="flex flex-wrap items-end gap-2">
                     <label class="flex flex-col text-xs text-[var(--color-muted)]">
                       User (login)
                       <input bind:value={app.importSettings.github.user} placeholder="octocat" class="{inputCls} w-40" />
                     </label>
                     <label class="flex flex-col text-xs text-[var(--color-muted)]">
-                      Repo (optional)
+                      Repo ({app.importSettings.github.mode === 'commits' ? 'required' : 'optional'})
                       <input bind:value={app.importSettings.github.repo} placeholder="owner/name" class="{inputCls} w-44" />
                     </label>
+                    {#if app.importSettings.github.mode === 'commits'}
+                      <label class="flex flex-col text-xs text-[var(--color-muted)]">
+                        Branch
+                        <input bind:value={app.importSettings.github.branch} placeholder="default branch" class="{inputCls} w-44" />
+                      </label>
+                    {/if}
                     <label class="flex flex-col text-xs text-[var(--color-muted)]">
                       Since
                       <input type="date" bind:value={app.importSettings.github.since} class={inputCls} use:closeDatePicker />
@@ -656,32 +680,50 @@
                       <input type="checkbox" bind:checked={app.importSettings.github.importPrivate} />
                       Mark imported entries private
                     </label>
-                    <label class="flex items-center gap-2 text-xs text-[var(--color-muted)]">
-                      <input type="checkbox" bind:checked={app.importSettings.github.fetchDiscussion} />
-                      Fetch PR/issue discussion
-                    </label>
-                    {#if app.importSettings.github.fetchDiscussion}
-                      <label class="flex flex-col text-xs text-[var(--color-muted)]">
-                        Comments
-                        <select bind:value={app.importSettings.github.commentScope} class={inputCls}>
-                          <option value="self">My comments</option>
-                          <option value="all">Everyone's</option>
-                        </select>
+                    {#if app.importSettings.github.mode === 'commits'}
+                      <label class="flex items-center gap-2 text-xs text-[var(--color-muted)]">
+                        <input type="checkbox" bind:checked={app.importSettings.github.excludeMerges} />
+                        Exclude merge commits
                       </label>
-                      <label class="flex flex-col text-xs text-[var(--color-muted)]">
-                        Discussion char cap
-                        <input
-                          type="number"
-                          min="1"
-                          placeholder="2000"
-                          bind:value={app.importSettings.github.discussionCharCap}
-                          class="{inputCls} w-24"
-                        />
+                    {:else}
+                      <label class="flex items-center gap-2 text-xs text-[var(--color-muted)]">
+                        <input type="checkbox" bind:checked={app.importSettings.github.fetchDiscussion} />
+                        Fetch PR/issue discussion
                       </label>
+                      {#if app.importSettings.github.fetchDiscussion}
+                        <label class="flex flex-col text-xs text-[var(--color-muted)]">
+                          Comments
+                          <select bind:value={app.importSettings.github.commentScope} class={inputCls}>
+                            <option value="self">My comments</option>
+                            <option value="all">Everyone's</option>
+                          </select>
+                        </label>
+                        <label class="flex flex-col text-xs text-[var(--color-muted)]">
+                          Discussion char cap
+                          <input
+                            type="number"
+                            min="1"
+                            placeholder="2000"
+                            bind:value={app.importSettings.github.discussionCharCap}
+                            class="{inputCls} w-24"
+                          />
+                        </label>
+                      {/if}
                     {/if}
                   </div>
+                  {#if app.importSettings.github.mode === 'commits'}
+                    <p class="text-xs text-[var(--color-muted)]">
+                      One repo per run — change size is included; the diff is never imported.
+                    </p>
+                  {/if}
                   <div class="flex flex-wrap items-center gap-2 border-t border-dashed border-[var(--color-line)] pt-3">
-                    <button class={runCls} disabled={app.busy || !app.importSettings.github.user.trim()} onclick={runGithub}>
+                    <button
+                      class={runCls}
+                      disabled={app.busy
+                        || !app.importSettings.github.user.trim()
+                        || (app.importSettings.github.mode === 'commits' && !app.importSettings.github.repo.trim())}
+                      onclick={runGithub}
+                    >
                       <Icon name="sync" size={17} />
                       Run GitHub import
                     </button>

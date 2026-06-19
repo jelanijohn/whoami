@@ -92,7 +92,9 @@ explicit promote.**
   and Warp AI history map provider data into normalized items, landing them as
   *candidates in a review inbox* (never the record). Mappers are pure and
   fixture-tested; the layer never touches the record, secrets, or the index
-  directly. The website importer fetches only the pages you enter (and a sitemap
+  directly. The GitHub adapter imports either the issues & PRs you authored or, per
+  run, a repo's commits you authored (change-size counts and your message — never
+  the diff). The website importer fetches only the pages you enter (and a sitemap
   you point at) — it is not a crawler — and treats the polished prose as a prompt
   to write the rawer truth underneath. An item that arrives without a real date is
   staged as *needs-date*: you set its date in the inbox before promoting — the app

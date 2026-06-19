@@ -96,6 +96,30 @@ describe('buildFeed (spec §4.2.4, §10.4)', () => {
     expect(feed.window).toBe('fixed');
   });
 
+  it('snapshots commit-mode github params wholesale (commits spec §6, no feeds.ts change)', () => {
+    const feed = buildFeed({
+      id: 'gc',
+      label: 'commits',
+      kind: 'github',
+      project: '',
+      liveParams: { user: 'octocat', repo: 'acme/waid', mode: 'commits', branch: 'main', excludeMerges: false },
+      importPrivate: true
+    });
+    // The mode/branch/excludeMerges snapshot rides through buildFeed untouched…
+    expect(feed.params.mode).toBe('commits');
+    expect(feed.params.branch).toBe('main');
+    expect(feed.params.excludeMerges).toBe(false);
+    // …and survives the effective-params clone (where toGithubParams then reads it).
+    const p = effectiveLiveParams(feed);
+    expect(p.mode).toBe('commits');
+    expect(p.branch).toBe('main');
+    expect(p.excludeMerges).toBe(false);
+    // A feed saved before this change (no mode key) carries none — toGithubParams
+    // then defaults it to 'items' / excludeMerges:true.
+    const legacy = buildFeed({ id: 'g0', label: 'old', kind: 'github', project: '', liveParams: { user: 'octocat' } });
+    expect(effectiveLiveParams(legacy).mode).toBeUndefined();
+  });
+
   it('defaults asana/gmail private true regardless of importPrivate', () => {
     const a = buildFeed({ id: 'a', label: 'as', kind: 'asana', project: '', importPrivate: false });
     expect(a.private).toBe(true);

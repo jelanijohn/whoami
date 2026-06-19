@@ -9,6 +9,8 @@ import { RECORD_GITIGNORE } from '../templates';
 import type { Platform } from '../types';
 import {
   mapGithubGraphqlNode,
+  mapGithubCommitNode,
+  commitsQuery,
   githubSearchQuery,
   apiBase,
   graphqlUrl,
@@ -358,6 +360,9 @@ describe('fetchGithub GraphQL listing', () => {
     const sent = JSON.parse(captured!.body!);
     expect(sent.variables.q).toBe('author:jelani repo:acme/waid'); // un-encoded qualifier syntax
     expect(captured!.url).not.toContain('author%3A'); // q is NOT in the URL
+    // Back-compat: no mode ⇒ the items search query, never the commits query.
+    expect(sent.query).toContain('search(query:');
+    expect(sent.query).not.toContain('history(author:');
   });
 
   it('follows the cursor across pages and stops at the cap', async () => {
@@ -397,6 +402,221 @@ describe('fetchGithub GraphQL listing', () => {
     await expect(fetchGithub(http, { token: 't', user: 'jelani' })).rejects.toThrow(
       /GitHub GraphQL error: Something went wrong/
     );
+  });
+});
+
+// --- GitHub commits: mapGithubCommitNode (pure, commits spec §6) ------------
+
+const GQL_COMMIT = {
+  oid: 'abc1234def5678901234567890abcdef12345678',
+  messageHeadline: 'Add commit history mode',
+  messageBody: 'Resolves the long-standing ask.\n\nDetails follow.',
+  authoredDate: '2026-05-20T09:00:00Z',
+  committedDate: '2026-05-21T10:00:00Z',
+  url: 'https://github.com/acme/waid/commit/abc1234def5678901234567890abcdef12345678',
+  additions: 120,
+  deletions: 8,
+  changedFilesIfAvailable: 4,
+  parents: { totalCount: 1 }
+};
+
+describe('mapGithubCommitNode', () => {
+  it('maps a normal multi-line commit', () => {
+    const item = mapGithubCommitNode(GQL_COMMIT, 'acme/waid');
+    expect(item.source).toBe('github');
+    expect(item.sourceId).toBe(GQL_COMMIT.oid); // full SHA, not databaseId
+    expect(item.title).toBe('Add commit history mode'); // == messageHeadline
+    expect(item.date).toBe('2026-05-20'); // authoredDate, not committedDate
+    expect(item.url).toBe(GQL_COMMIT.url);
+    expect(item.suggestedType).toBe('journal');
+    expect(item.suggestedTags).toEqual(['github', 'commit']);
+    expect(item.suggestedProject).toBe('acme-waid');
+    expect(item.meta?.type).toBe('commit');
+    expect(item.meta?.repo).toBe('acme/waid');
+    expect(item.meta?.parents).toBe('1');
+    expect(item.extraFrontmatter?.change_size).toEqual({
+      additions: 120,
+      deletions: 8,
+      changed_files: 4
+    });
+    expect(item.extraFrontmatter?.commit_sha).toBe(GQL_COMMIT.oid);
+    // Body: header lines + the verbatim message block; headline not duplicated.
+    expect(item.body).toContain('GitHub commit in acme/waid.');
+    expect(item.body).toContain('SHA: abc1234.'); // first 7 of oid
+    expect(item.body).toContain('Authored: 2026-05-20.');
+    expect(item.body).toContain('Changes: +120 −8 across 4 files.');
+    expect(item.body).toContain('--- Message ---\nResolves the long-standing ask.\n\nDetails follow.');
+    expect(item.body).not.toContain('Add commit history mode'); // headline only in title
+  });
+
+  it('omits the message block when messageBody is empty', () => {
+    const item = mapGithubCommitNode({ ...GQL_COMMIT, messageBody: '   ' }, 'acme/waid');
+    expect(item.body).not.toContain('--- Message ---');
+    expect(item.body).toContain('Changes: +120 −8 across 4 files.');
+  });
+
+  it('coerces a null changedFilesIfAvailable to 0', () => {
+    const item = mapGithubCommitNode({ ...GQL_COMMIT, changedFilesIfAvailable: null }, 'acme/waid');
+    expect((item.extraFrontmatter?.change_size as { changed_files: number }).changed_files).toBe(0);
+    expect(item.body).toContain('across 0 files.');
+  });
+
+  it('maps a merge commit fine when mapped directly (the filter lives in the loop)', () => {
+    const item = mapGithubCommitNode({ ...GQL_COMMIT, parents: { totalCount: 2 } }, 'acme/waid');
+    expect(item.meta?.parents).toBe('2');
+    expect(item.sourceId).toBe(GQL_COMMIT.oid);
+  });
+});
+
+describe('commitsQuery', () => {
+  it('selects defaultBranchRef when there is no branch', () => {
+    const q = commitsQuery(false);
+    expect(q).toContain('defaultBranchRef');
+    expect(q).not.toContain('ref(');
+    expect(q).toContain('changedFilesIfAvailable');
+    expect(q).toContain('history(author:');
+  });
+
+  it('selects ref(qualifiedName:) when there is a branch', () => {
+    const q = commitsQuery(true);
+    expect(q).toContain('ref(qualifiedName:');
+    expect(q).not.toContain('defaultBranchRef');
+    expect(q).toContain('changedFilesIfAvailable');
+    expect(q).toContain('history(author:');
+  });
+});
+
+// --- GitHub commits: fetch path (fake Http, GraphQL history) -----------------
+
+/** A commit history node (sequential SHAs via index so fixtures vary). */
+function commitNode(i: number, parents = 1): unknown {
+  const oid = String(i).padStart(40, '0');
+  return {
+    oid,
+    messageHeadline: `commit ${i}`,
+    messageBody: '',
+    authoredDate: '2026-05-20T09:00:00Z',
+    committedDate: '2026-05-20T09:00:00Z',
+    url: `https://github.com/acme/waid/commit/${oid}`,
+    additions: i,
+    deletions: 0,
+    changedFilesIfAvailable: 1,
+    parents: { totalCount: parents }
+  };
+}
+
+/** Wrap commit nodes in the repository.defaultBranchRef.target.history envelope. */
+function gqlHistory(nodes: unknown[], hasNextPage = false, endCursor: string | null = null): unknown {
+  return {
+    data: {
+      repository: {
+        defaultBranchRef: { target: { history: { pageInfo: { hasNextPage, endCursor }, nodes } } }
+      }
+    }
+  };
+}
+
+/** Route the two-call commit flow: ResolveUser first, then history. */
+function commitHttp(history: unknown, user: unknown = { data: { user: { id: 'U_1' } } }): Http {
+  let seenResolve = false;
+  return {
+    async request(req: HttpRequest): Promise<HttpResponse> {
+      const sent = JSON.parse(req.body!);
+      const isResolve = String(sent.query).includes('ResolveUser');
+      const json = isResolve ? user : history;
+      if (isResolve) seenResolve = true;
+      // History must only be requested after the resolve succeeded.
+      if (!isResolve && !seenResolve) return { status: 500, ok: false, headers: {}, text: 'resolve first' };
+      return { status: 200, ok: true, headers: {}, text: JSON.stringify(json) };
+    }
+  };
+}
+
+describe('fetchGithub commit mode', () => {
+  it('routes to the commits query (not search) and maps each node', async () => {
+    let historyQuery = '';
+    const http: Http = {
+      async request(req) {
+        const sent = JSON.parse(req.body!);
+        if (String(sent.query).includes('ResolveUser')) {
+          return { status: 200, ok: true, headers: {}, text: JSON.stringify({ data: { user: { id: 'U_1' } } }) };
+        }
+        historyQuery = sent.query;
+        return { status: 200, ok: true, headers: {}, text: JSON.stringify(gqlHistory([commitNode(1)])) };
+      }
+    };
+    const items = await fetchGithub(http, { token: 't', user: 'jelani', repo: 'acme/waid', mode: 'commits' });
+    expect(items).toHaveLength(1);
+    expect(items[0].meta?.type).toBe('commit');
+    expect(historyQuery).toContain('history(author:');
+    expect(historyQuery).not.toContain('search(query:');
+  });
+
+  it('excludes merge commits by default and they do not count toward the cap', async () => {
+    const page = gqlHistory([commitNode(1, 1), commitNode(2, 2), commitNode(3, 1)]);
+    const dropped = await fetchGithub(commitHttp(page), {
+      token: 't',
+      user: 'jelani',
+      repo: 'acme/waid',
+      mode: 'commits'
+    });
+    expect(dropped).toHaveLength(2); // the 2-parent merge is skipped
+    expect(dropped.every((i) => i.meta?.parents === '1')).toBe(true);
+
+    const kept = await fetchGithub(commitHttp(page), {
+      token: 't',
+      user: 'jelani',
+      repo: 'acme/waid',
+      mode: 'commits',
+      excludeMerges: false
+    });
+    expect(kept).toHaveLength(3); // merge retained when toggled off
+  });
+
+  it('converts date bounds to GitTimestamps and passes null when absent', async () => {
+    let vars: Record<string, unknown> = {};
+    const http: Http = {
+      async request(req) {
+        const sent = JSON.parse(req.body!);
+        if (String(sent.query).includes('ResolveUser')) {
+          return { status: 200, ok: true, headers: {}, text: JSON.stringify({ data: { user: { id: 'U_1' } } }) };
+        }
+        vars = sent.variables;
+        return { status: 200, ok: true, headers: {}, text: JSON.stringify(gqlHistory([])) };
+      }
+    };
+    await fetchGithub(http, {
+      token: 't',
+      user: 'jelani',
+      repo: 'acme/waid',
+      mode: 'commits',
+      since: '2026-01-01'
+    });
+    expect(vars.since).toBe('2026-01-01T00:00:00Z');
+    expect(vars.until).toBeNull();
+  });
+
+  it('throws when the user cannot be resolved', async () => {
+    const http = commitHttp(gqlHistory([]), { data: { user: null } });
+    await expect(
+      fetchGithub(http, { token: 't', user: 'ghost', repo: 'acme/waid', mode: 'commits' })
+    ).rejects.toThrow(/couldn't resolve GitHub user/);
+  });
+
+  it('throws when the repo is blank', async () => {
+    await expect(
+      fetchGithub(commitHttp(gqlHistory([])), { token: 't', user: 'jelani', mode: 'commits' })
+    ).rejects.toThrow(/commit import needs a repo/);
+  });
+
+  it("commit oid and PR databaseId never collide as sourceId under source 'github' (D3)", () => {
+    const commit = mapGithubCommitNode(GQL_COMMIT, 'acme/waid');
+    const pr = mapGithubGraphqlNode(GQL_PR);
+    expect(commit.source).toBe('github');
+    expect(pr.source).toBe('github');
+    expect(commit.sourceId).not.toBe(pr.sourceId);
+    expect(commit.sourceId).toMatch(/^[0-9a-f]{40}$/); // hex SHA
+    expect(pr.sourceId).toMatch(/^\d+$/); // decimal databaseId
   });
 });
 

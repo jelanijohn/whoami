@@ -20,6 +20,8 @@ export {
   graphqlUrl,
   githubSearchQuery,
   mapGithubGraphqlNode,
+  mapGithubCommitNode,
+  commitsQuery,
   fetchGithub,
   validateGithub,
   type GithubFetchOpts
