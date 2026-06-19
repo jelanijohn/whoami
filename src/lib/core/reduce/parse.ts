@@ -23,8 +23,11 @@ export function stripFence(raw: string): string {
  * ("Here is the retrospective:") despite the schema note — without falling for a
  * brace inside a string literal. Truncated replies have no balanced close, so
  * they correctly return null and fail visibly.
+ *
+ * Exported so sibling passes (e.g. `wins/`) reuse the exact same tolerant
+ * object-recovery instead of duplicating the brace-balancing logic.
  */
-function firstJsonObject(text: string): string | null {
+export function firstJsonObject(text: string): string | null {
   const start = text.indexOf('{');
   if (start === -1) return null;
   let depth = 0;

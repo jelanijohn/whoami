@@ -8,7 +8,15 @@
  */
 
 import type { Entry, Profile } from '../types';
-import { escapeHtml, groupByType, links, monthYear, publicEntries, str } from './shared';
+import {
+  escapeHtml,
+  groupByType,
+  links,
+  monthYear,
+  partitionWins,
+  publicEntries,
+  str
+} from './shared';
 
 export interface SiteInput {
   profile: Profile;
@@ -39,12 +47,25 @@ function renderBodyHtml(body: string): string {
     .join('\n');
 }
 
-function renderEntry(e: Entry): string {
+/** Render a list of wins as `<li>` items (titles escaped, body appended plain). */
+function winItems(wins: Entry[]): string {
+  return wins
+    .map((w) => {
+      const body = w.body.trim();
+      return `        <li>${escapeHtml(w.frontmatter.title)}${
+        body ? ` <span class="win-body">${escapeHtml(body)}</span>` : ''
+      }</li>`;
+    })
+    .join('\n');
+}
+
+function renderEntry(e: Entry, byParent: Map<string, Entry[]>): string {
   const fm = e.frontmatter;
   const org = str(e, 'org');
   const role = str(e, 'role');
   const meta = [role, org].filter(Boolean).join(' · ');
   const ls = links(e);
+  const nested = byParent.get(String(fm.id)) ?? [];
   return `      <article class="entry">
         <h3>${escapeHtml(fm.title)}</h3>
         <p class="meta">${escapeHtml([meta, monthYear(fm.date)].filter(Boolean).join('  ·  '))}</p>
@@ -56,6 +77,7 @@ function renderEntry(e: Entry): string {
                 .join(' · ')}</p>`
             : ''
         }
+        ${nested.length ? `<ul class="wins">\n${winItems(nested)}\n        </ul>` : ''}
       </article>`;
 }
 
@@ -93,12 +115,15 @@ const STYLE = `
   ul.mentions { list-style:none; padding:0; margin:0; }
   .mention { padding:.5rem 0; border-bottom:1px dashed var(--line); }
   .mention .source { color: var(--muted); }
+  ul.wins { margin:.4rem 0 0; padding-left:1.1rem; }
+  ul.wins .win-body { color: var(--muted); }
   footer { margin-top:3rem; color:var(--muted); font-size:.8rem; text-align:center; }
 `;
 
 export function generateSiteHtml(input: SiteInput, sections = DEFAULT_SECTIONS): string {
   const entries = publicEntries(input.entries);
   const groups = groupByType(entries);
+  const { byParent, nestedIds } = partitionWins(entries);
   const p = input.profile.frontmatter;
   const name = p.name || 'Personal Site';
 
@@ -112,9 +137,23 @@ export function generateSiteHtml(input: SiteInput, sections = DEFAULT_SECTIONS):
     .map((s) => {
       const items = groups.get(s.type);
       if (!items || items.length === 0) return '';
+      // The "Highlights" (win) section renders only the orphan wins, as the same
+      // `<ul class="wins">` used when a win nests under a role/project. A win with
+      // a resolvable parent is already rendered there; if that empties the
+      // section, drop it (and its heading) entirely.
+      if (s.type === 'win') {
+        const orphans = items.filter((w) => !nestedIds.has(String(w.frontmatter.id)));
+        if (orphans.length === 0) return '';
+        return `    <section>
+      <h2>${escapeHtml(s.heading)}</h2>
+      <ul class="wins">
+${winItems(orphans)}
+      </ul>
+    </section>`;
+      }
       return `    <section>
       <h2>${escapeHtml(s.heading)}</h2>
-${items.map(renderEntry).join('\n')}
+${items.map((e) => renderEntry(e, byParent)).join('\n')}
     </section>`;
     })
     .filter(Boolean)

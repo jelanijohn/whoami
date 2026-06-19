@@ -1,7 +1,8 @@
 <script lang="ts">
   import { SvelteSet } from 'svelte/reactivity';
   import { app } from '$lib/state.svelte';
-  import { type Entry, type SortKey } from '$lib/core';
+  import { type Entry, type SortKey, type WinProposal, type AcceptedWin } from '$lib/core';
+  import WinDraftReview from '$lib/components/WinDraftReview.svelte';
   import { projectColor, UNAFFILIATED_COLOR } from '$lib/journal/theme';
   import { computeGroups, dayGroups } from '$lib/journal/grouping';
   import EntryEditor from '$lib/components/EntryEditor.svelte';
@@ -83,6 +84,23 @@
     await app.bulkSetProject(selectedEntries, bulkProject === '' ? '' : bulkProject);
     bulkProject = SET_PROJECT;
     selected.clear();
+  }
+
+  // --- Draft wins (LLM, gated by accept) -------------------------------------
+  let winProposal = $state<WinProposal | null>(null);
+  let winTargets = $state<{ id: string; label: string; kind: 'role' | 'project' }[]>([]);
+  async function startDraftWins() {
+    winTargets = await app.winTargets();
+    const p = await app.draftWins([...selected]);
+    if (p) winProposal = p; // null on error/no-store; the toast already explains
+  }
+  async function acceptWins(accepted: AcceptedWin[]) {
+    const created = await app.acceptWins(accepted);
+    if (created) {
+      winProposal = null;
+      selectMode = false;
+      selected.clear();
+    }
   }
   // Leaving a selectable view drops the picked set so the bar can't linger.
   $effect(() => {
@@ -278,7 +296,29 @@
         >
           Apply
         </button>
+        <button
+          class="rounded border border-[var(--color-accent)] px-2.5 py-1 text-xs font-medium text-[var(--color-accent)] hover:bg-[var(--color-accent)]/10 disabled:opacity-50"
+          disabled={!app.llmReady || app.busy}
+          title={app.llmReady
+            ? 'Draft résumé-grade wins from the selected entries'
+            : 'Set an AI provider in Data → AI provider to draft wins'}
+          onclick={() => void startDraftWins()}
+        >
+          Draft wins…
+        </button>
       </div>
+    </div>
+  {/if}
+
+  <!-- Wins draft review (LLM proposal — nothing is saved until accepted) -->
+  {#if winProposal}
+    <div class="mt-4">
+      <WinDraftReview
+        proposal={winProposal}
+        targets={winTargets}
+        onaccept={acceptWins}
+        oncancel={() => (winProposal = null)}
+      />
     </div>
   {/if}
 

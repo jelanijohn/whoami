@@ -84,7 +84,14 @@ export {
   type RebuildReport
 } from './index-db';
 
-export { RecordStore, INBOX_DIR, provenanceKey, type PromoteOverrides } from './record';
+export {
+  RecordStore,
+  INBOX_DIR,
+  provenanceKey,
+  type PromoteOverrides,
+  type WinProposal,
+  type AcceptedWin
+} from './record';
 
 export {
   status as gitStatus,
@@ -114,4 +121,5 @@ export {
 } from './feeds';
 export * from './llm';
 export * from './reduce';
+export * from './wins';
 export * from './triage';

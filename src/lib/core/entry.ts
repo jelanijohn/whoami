@@ -28,7 +28,10 @@ const ENTRY_KEY_ORDER = [
   'title',
   'private',
   'tags',
-  'project'
+  'project',
+  // A win nests under this role/project entry id; sits by `project`, the other
+  // cross-cutting affiliation key (wins-from-journal spec §1).
+  'parent'
 ] as const;
 
 /** Current wall-clock time as an ISO 8601 string. Injectable for tests. */

@@ -72,6 +72,8 @@ import {
   type RawItem,
   type RebuildReport,
   type ReduceProposal,
+  type WinProposal,
+  type AcceptedWin,
   type SortDir,
   type SortKey,
   type SyncResult
@@ -90,6 +92,10 @@ export type { Feed, FeedKind, FeedRunResult, RefreshReport } from './core';
 /** Persisted Journal layout preferences (view/grouping/sort/private) so the
  * user's preferred layout sticks between sessions (design handoff). */
 const LS_VIEW = 'whoami:journalView';
+
+/** A selection at/above this size still runs as one synthesis call (spec §2.4)
+ * but the toast nudges the human to narrow it for sharper wins (spec §5). */
+const WINS_SELECTION_HINT = 40;
 
 /** The four switchable Journal views (design handoff). */
 export type JournalView = 'grouped' | 'timeline' | 'calendar' | 'table';
@@ -1529,6 +1535,73 @@ class AppState {
       await this.store!.saveProjectReduction(proposal.projectEntryId, proposal.inner);
       await this.refresh();
       this.message = 'Saved the retrospective into the project entry';
+    });
+  }
+
+  // --- Wins from Journal (wins-from-journal spec §5) ------------------------
+
+  /** Roles + projects the picker offers as a win's nesting parent. Includes
+   * private ones — the human is choosing where it *will* nest; the generator's
+   * privacy strip is the real gate (spec §5). */
+  async winTargets(): Promise<{ id: string; label: string; kind: 'role' | 'project' }[]> {
+    if (!this.store) return [];
+    // Include private roles/projects — the human is choosing where it *will*
+    // nest; the generator's privacy strip is the real gate (spec §5). Fetch
+    // projects with includePrivate explicitly so the picker doesn't inherit the
+    // Journal's private toggle.
+    const [roles, projects] = await Promise.all([
+      this.store.listEntries({ types: ['role'], includePrivate: true }),
+      this.store.listProjects(true)
+    ]);
+    const roleTargets = roles.map((e) => ({
+      id: String(e.frontmatter.id),
+      label: String(e.frontmatter.title),
+      kind: 'role' as const
+    }));
+    const projectTargets = projects.map((p) => ({
+      id: String(p.entry.frontmatter.id),
+      label: String(p.entry.frontmatter.title),
+      kind: 'project' as const
+    }));
+    return [...roleTargets, ...projectTargets];
+  }
+
+  /** Draft wins from a hand-picked selection (spec §5) — nothing is written
+   * until {@link acceptWins}. Empty result is reported plainly, not an error. */
+  draftWins(sourceIds: string[]): Promise<WinProposal | null> {
+    if (!this.store) return Promise.resolve(null);
+    return this.guard(async () => {
+      if (!this.llm) throw new Error('No LLM provider configured (set one in Data → AI provider)');
+      const proposal = await this.store!.draftWins(this.llm, sourceIds);
+      proposal.model = this.llmConfig
+        ? `${this.llmConfig.provider}:${this.llmConfig.model}`
+        : undefined;
+      if (proposal.drafts.length === 0) {
+        this.message = "The model didn't draft any wins it could ground in your selection";
+      } else {
+        // A single synthesis call only (spec §2.4) — never split silently; nudge
+        // the human to narrow a very large selection instead.
+        const hint =
+          proposal.sourceCount >= WINS_SELECTION_HINT
+            ? ' — tip: a tighter selection (one project or stretch at a time) usually yields sharper wins'
+            : '';
+        this.message = `Drafted ${proposal.drafts.length} win(s) from ${proposal.sourceCount} entries — review and accept${hint}`;
+      }
+      return proposal;
+    });
+  }
+
+  /** The accept gate: create the kept/edited wins as first-class entries. */
+  acceptWins(accepted: AcceptedWin[]): Promise<Entry[] | null> {
+    if (!this.store) return Promise.resolve(null);
+    return this.guard(async () => {
+      const model = this.llmConfig
+        ? `${this.llmConfig.provider}:${this.llmConfig.model}`
+        : undefined;
+      const created = await this.store!.saveWins(accepted, { model });
+      await this.refresh();
+      this.message = `Saved ${created.length} win(s)`;
+      return created;
     });
   }
 

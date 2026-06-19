@@ -44,8 +44,11 @@ src/lib/core/        Framework-agnostic TypeScript core (no Tauri, no browser).
   triage/              Prefilter + optional LLM pass: a keep|frivolous sort
                          signal; never deletes or auto-rejects.
   reduce/              Optional LLM map/reduce: roll a noisy inbox into drafts.
+  wins/                Optional LLM pass: draft résumé-grade wins from picked
+                         journal entries (one synthesis call, evidence-gated).
   llm/                 LLM provider seam — Ollama (local) + Anthropic, over Http.
-  generators/          Resume (Markdown) + standalone site (HTML); private excluded.
+  generators/          Resume (Markdown) + standalone site (HTML); private
+                         excluded; wins nest under their role/project.
   platform-node.ts     Node-backed Platform (tests + future CLI).
 src/lib/platform-tauri.ts  Tauri-backed Platform (sql / fs / shell / http / keyring).
 src/lib/state.svelte.ts    Svelte 5 runes app state driving the UI.
@@ -56,8 +59,8 @@ src/lib/inbox/        Pure helpers for the Inbox triage view: candidate filter/
                         sort/group + the per-source palette and glyph map.
 src/lib/components/   Titlebar, AppMenu, the collapsible candidate row, editor,
                         the credential-setup help popups, the identity
-                        merge-review panel, and the Journal views
-                        (Grouped · Timeline · Calendar · Table).
+                        merge-review panel, the win-draft review panel, and the
+                        Journal views (Grouped · Timeline · Calendar · Table).
 src/routes/          SvelteKit SPA: Journal · Import · Inbox · Projects ·
                        Profile · Resume · Personal site · Data.
 src-tauri/           Rust shell: registers the fs/sql/shell/dialog/http plugins.
@@ -105,6 +108,13 @@ explicit promote.**
   Inbox-only like every import; nothing is auto-promoted.
 - **Reduce** (`src/lib/core/reduce/`) — an optional LLM map/reduce that rolls a
   noisy inbox up into clean entry drafts for you to review.
+- **Wins** (`src/lib/core/wins/`) — pick a set of journal entries and have the
+  LLM draft résumé-grade accomplishments from them. One synthesis call; every
+  draft must cite the entries it came from (ungrounded ones are dropped), and
+  nothing is saved until you accept. Each accepted win becomes its own
+  `type: win` entry that the résumé and site nest under its role or project. Wins
+  default public — the one deliberate exception to private-by-default, because
+  they're curated for output and have just passed your review.
 - **LLM seam** (`src/lib/core/llm/`) — AI passes run through a provider
   abstraction: **Ollama** locally or **Anthropic** (key in the OS keyring, never
   in the record or app config). With no provider configured the app says so

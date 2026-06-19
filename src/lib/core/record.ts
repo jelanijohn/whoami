@@ -49,6 +49,7 @@ import {
   type RollupOptions,
   type ReduceProposal
 } from './reduce';
+import { draftWins as draftWinsPipeline, type WinDraft } from './wins';
 import type { Llm } from './types';
 // Import from the leaf modules (not the index) to avoid a triage→record cycle.
 import { TRIAGE_KEYS, type TriageRubric, type TriageSignal, type TriageResult } from './triage/types';
@@ -65,6 +66,35 @@ import { generateSiteHtml } from './generators/site';
 
 // Re-export the index types the UI consumes through the facade.
 export type { ListFilters, ProjectSummary, RebuildReport, ReduceProposal };
+export type { WinDraft };
+
+/** A wins draft proposal awaiting the human accept gate (wins spec §3.1).
+ * Nothing is written until {@link RecordStore.saveWins} is called. */
+export interface WinProposal {
+  /** The selected source entry ULIDs. */
+  sourceIds: string[];
+  sourceCount: number;
+  /** Evidence-verified drafts (may be empty). */
+  drafts: WinDraft[];
+  /** Latest date among the selected sources — seeds each win's date. */
+  defaultDate: string;
+  /** Provenance string, e.g. "anthropic:claude-…", or undefined. */
+  model?: string;
+}
+
+/** One accepted (possibly human-edited) win at the gate (wins spec §3.1). */
+export interface AcceptedWin {
+  /** Final statement (the human may have edited the draft). */
+  text: string;
+  /** Source ULIDs (carried from the draft). */
+  evidence: string[];
+  /** Role/project ULID to nest under, or '' / undefined for Highlights. */
+  parent?: string;
+  /** YYYY-MM-DD; required & validated (never defaults to today). */
+  date: string;
+  /** Defaults false (public) at the call site. */
+  private?: boolean;
+}
 
 /** Frontmatter the human can set/override at the promote gate (plan §2.4). */
 export interface PromoteOverrides {
@@ -604,6 +634,77 @@ export class RecordStore {
     if (!indexed?.path) throw new Error('project entry not found');
     const fresh = await this.readEntryFile(indexed.path);
     return this.updateEntry({ ...fresh, body: upsertMarkedBlock(fresh.body, inner) });
+  }
+
+  // -------------------------------------------------------------------------
+  // Wins from Journal (wins-from-journal spec §3) — a NEW output path, not the
+  // reduce region. Drafts résumé-grade accomplishments from a hand-picked set of
+  // entries via the LLM. `draftWins` proposes (writes nothing); `saveWins` is the
+  // human accept gate that creates first-class `type: win` entries.
+  // -------------------------------------------------------------------------
+
+  /**
+   * Draft wins from a selection of source entry ULIDs (wins spec §3.2). Returns a
+   * PROPOSAL only — nothing is written. Every surviving draft's evidence resolves
+   * to one of the selected ULIDs (ungrounded drafts are dropped upstream). Throws
+   * if not a single id resolves.
+   */
+  async draftWins(
+    llm: Llm,
+    sourceIds: string[],
+    opts: { maxTokens?: number } = {}
+  ): Promise<WinProposal> {
+    const entries: Entry[] = [];
+    for (const id of sourceIds) {
+      const e = await getEntryById(this.platform.db, id);
+      if (e) entries.push(e); // skip ids that don't resolve
+    }
+    if (entries.length === 0) throw new Error('None of the selected entries could be loaded');
+
+    // Latest date among the resolved sources seeds each win's date (never today).
+    const defaultDate = entries
+      .map((e) => String(e.frontmatter.date))
+      .reduce((a, b) => (b > a ? b : a));
+
+    const drafts = await draftWinsPipeline(llm, { entries, maxTokens: opts.maxTokens });
+    return {
+      sourceIds: entries.map((e) => String(e.frontmatter.id)),
+      sourceCount: entries.length,
+      drafts,
+      defaultDate
+    };
+  }
+
+  /**
+   * The wins accept gate (wins spec §3.3): create a `type: win` entry per accepted
+   * draft via the normal text-first-then-index path. Defaults public (D4) so the
+   * win surfaces in the résumé/site. Enforces a valid date — NEVER defaults to
+   * today (mirrors the promote date gate). Returns the created entries.
+   */
+  async saveWins(accepted: AcceptedWin[], opts: { model?: string } = {}): Promise<Entry[]> {
+    const out: Entry[] = [];
+    for (const win of accepted) {
+      const date = win.date.trim();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        throw new Error('A win needs a valid date (YYYY-MM-DD) — never defaults to today.');
+      }
+      const parent = win.parent?.trim();
+      const entry = await this.createEntry({
+        type: 'win',
+        title: win.text.trim(),
+        date,
+        private: win.private ?? false,
+        body: '',
+        extra: {
+          ...(parent ? { parent } : {}),
+          evidence: win.evidence,
+          generator: 'wins',
+          ...(opts.model ? { model: opts.model } : {})
+        }
+      });
+      out.push(entry);
+    }
+    return out;
   }
 
   getEntry(id: string): Promise<Entry | null> {

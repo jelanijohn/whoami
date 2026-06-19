@@ -679,3 +679,79 @@ describe('Journal query extensions (design handoff)', () => {
     ]);
   });
 });
+
+describe('wins from journal (wins-from-journal spec §3)', () => {
+  /** A canned model returning a fixed reply, recording its calls. */
+  function cannedLlm(reply: string): Llm & { calls: LlmCompletionRequest[] } {
+    const calls: LlmCompletionRequest[] = [];
+    return {
+      calls,
+      async complete(req) {
+        calls.push(req);
+        return reply;
+      }
+    };
+  }
+
+  it('draftWins resolves ids, computes defaultDate = max(date), returns a proposal', async () => {
+    const a = await store.createEntry({ type: 'journal', title: 'A', date: '2024-01-01' });
+    const b = await store.createEntry({ type: 'journal', title: 'B', date: '2024-05-09' });
+    const ids = [a.frontmatter.id, b.frontmatter.id];
+    const llm = cannedLlm(JSON.stringify({ wins: [{ text: 'Shipped X', evidence: ids }] }));
+
+    const proposal = await store.draftWins(llm, ids);
+    expect(proposal.sourceCount).toBe(2);
+    expect(proposal.defaultDate).toBe('2024-05-09');
+    expect(proposal.drafts).toEqual([{ text: 'Shipped X', evidence: ids }]);
+    expect(llm.calls).toHaveLength(1);
+  });
+
+  it('draftWins throws when no id resolves', async () => {
+    const llm = cannedLlm('{"wins":[]}');
+    await expect(store.draftWins(llm, ['NOPE'])).rejects.toThrow(/could be loaded/);
+  });
+
+  it('saveWins creates type:win entries with evidence + generator marker, default public', async () => {
+    const [win] = await store.saveWins([
+      { text: 'Shipped the importer', evidence: ['SRC1'], date: '2024-05-09' }
+    ]);
+    expect(win.frontmatter.type).toBe('win');
+    expect(win.frontmatter.title).toBe('Shipped the importer');
+    expect(win.frontmatter.private).toBe(false); // default public (D4)
+    expect(win.frontmatter.generator).toBe('wins');
+    expect(win.frontmatter.evidence).toEqual(['SRC1']);
+    expect(win.frontmatter.source).toBeUndefined(); // never sets source/source_id
+  });
+
+  it('saveWins honors parent, model, and the keep-private toggle', async () => {
+    const [win] = await store.saveWins(
+      [{ text: 'w', evidence: ['SRC1'], date: '2024-05-09', parent: 'ROLE1', private: true }],
+      { model: 'anthropic:claude' }
+    );
+    expect(win.frontmatter.parent).toBe('ROLE1');
+    expect(win.frontmatter.model).toBe('anthropic:claude');
+    expect(win.frontmatter.private).toBe(true);
+  });
+
+  it('saveWins rejects an invalid/empty date (never today)', async () => {
+    await expect(
+      store.saveWins([{ text: 'w', evidence: ['SRC1'], date: '' }])
+    ).rejects.toThrow(/valid date/);
+    await expect(
+      store.saveWins([{ text: 'w', evidence: ['SRC1'], date: '2024/05/09' }])
+    ).rejects.toThrow(/valid date/);
+  });
+
+  it('saveWins writes text first, then index (the file and an index row both exist)', async () => {
+    const [win] = await store.saveWins([
+      { text: 'Grounded win', evidence: ['SRC1'], date: '2024-05-09' }
+    ]);
+    // Text on disk…
+    const onDisk = await readFile(join(root, win.path!), 'utf8');
+    expect(onDisk).toContain('Grounded win');
+    expect(onDisk).toContain('generator: wins');
+    // …and an index row (read goes through the index).
+    const indexed = await store.getEntry(win.frontmatter.id);
+    expect(indexed?.frontmatter.title).toBe('Grounded win');
+  });
+});

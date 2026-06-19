@@ -10,7 +10,7 @@
  */
 
 import type { Entry, Profile } from '../types';
-import { groupByType, links, monthYear, publicEntries, str } from './shared';
+import { groupByType, links, monthYear, partitionWins, publicEntries, str } from './shared';
 
 export interface ResumeInput {
   profile: Profile;
@@ -41,7 +41,14 @@ function entryDateRange(e: Entry): string {
   return end ? `${start} – ${monthYear(end)}` : start;
 }
 
-function renderEntry(e: Entry): string {
+/** Render one win as a Markdown bullet: its title, with the body (if any) on a
+ * following plain line. The same shape wherever a win appears (spec §4). */
+function renderWinBullet(w: Entry): string {
+  const body = w.body.trim();
+  return body ? `- ${w.frontmatter.title}\n  ${body}` : `- ${w.frontmatter.title}`;
+}
+
+function renderEntry(e: Entry, byParent: Map<string, Entry[]>): string {
   const fm = e.frontmatter;
   const org = str(e, 'org');
   const role = str(e, 'role');
@@ -66,6 +73,13 @@ function renderEntry(e: Entry): string {
     lines.push('');
     lines.push(ls.map((l) => `[${l}](${l})`).join(' · '));
   }
+
+  // Nest any wins that resolve to this role/project as bullets beneath it.
+  const nested = byParent.get(String(fm.id));
+  if (nested?.length) {
+    lines.push('');
+    for (const w of nested) lines.push(renderWinBullet(w));
+  }
   return lines.join('\n');
 }
 
@@ -73,6 +87,7 @@ export function generateResumeMarkdown(input: ResumeInput, opts: ResumeOptions =
   const sections = opts.sections ?? DEFAULT_SECTIONS;
   const entries = publicEntries(input.entries);
   const groups = groupByType(entries);
+  const { byParent, nestedIds } = partitionWins(entries);
   const p = input.profile.frontmatter;
 
   const out: string[] = [];
@@ -99,11 +114,23 @@ export function generateResumeMarkdown(input: ResumeInput, opts: ResumeOptions =
   for (const section of sections) {
     const items = groups.get(section.type);
     if (!items || items.length === 0) continue;
+    // Wins render as a flat bullet list of the orphans only — any win nested
+    // under a role/project is already rendered there. If that empties the group,
+    // the skip-empty guard above drops the "Highlights" heading entirely.
+    if (section.type === 'win') {
+      const orphans = items.filter((w) => !nestedIds.has(String(w.frontmatter.id)));
+      if (orphans.length === 0) continue;
+      out.push('');
+      out.push(`## ${section.heading}`);
+      out.push('');
+      for (const w of orphans) out.push(renderWinBullet(w));
+      continue;
+    }
     out.push('');
     out.push(`## ${section.heading}`);
     for (const e of items) {
       out.push('');
-      out.push(renderEntry(e));
+      out.push(renderEntry(e, byParent));
     }
   }
 

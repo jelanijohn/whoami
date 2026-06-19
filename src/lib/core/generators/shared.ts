@@ -62,6 +62,33 @@ export function links(entry: Entry): string[] {
   return [];
 }
 
+/**
+ * Partition wins by their resolvable parent (wins-from-journal spec §4.1).
+ *
+ * Operates on the already-public set, so a win whose `parent` is private/missing
+ * simply has no resolvable parent and falls through to the flat "Highlights"
+ * section. A win (`type: 'win'`) with a string `parent` matching a present entry
+ * id goes into `byParent`; input order is preserved within each bucket.
+ */
+export function partitionWins(entries: Entry[]): {
+  byParent: Map<string, Entry[]>;
+  nestedIds: Set<string>;
+} {
+  const present = new Set(entries.map((e) => String(e.frontmatter.id)));
+  const byParent = new Map<string, Entry[]>();
+  const nestedIds = new Set<string>();
+  for (const e of entries) {
+    if (e.frontmatter.type !== 'win') continue;
+    const parent = e.frontmatter.parent;
+    if (typeof parent !== 'string' || !present.has(parent)) continue;
+    const list = byParent.get(parent) ?? [];
+    list.push(e);
+    byParent.set(parent, list);
+    nestedIds.add(String(e.frontmatter.id));
+  }
+  return { byParent, nestedIds };
+}
+
 /** Escape text for safe interpolation into HTML. */
 export function escapeHtml(text: string): string {
   return text
