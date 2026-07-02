@@ -138,6 +138,7 @@ const RAW_STORY = {
   workflow_state_id: 500,
   epic_id: 42,
   group_id: 'uuid-team-1',
+  project_id: 7,
   app_url: 'https://app.shortcut.com/acme/story/57886',
   created_at: '2026-05-01T10:00:00Z',
   started_at: '2026-05-03T10:00:00Z',
@@ -150,10 +151,16 @@ const RAW_STORY = {
 const RESOLVE: ShortcutResolve = {
   states: new Map<number | string, string>([[500, 'Done']]),
   epics: new Map<number | string, string>([[42, 'Summer promo']]),
-  teams: new Map<number | string, string>([['uuid-team-1', 'Web']])
+  teams: new Map<number | string, string>([['uuid-team-1', 'Web']]),
+  projects: new Map<number | string, string>([[7, 'Acme Client Portal']])
 };
 
-const EMPTY_RESOLVE: ShortcutResolve = { states: new Map(), epics: new Map(), teams: new Map() };
+const EMPTY_RESOLVE: ShortcutResolve = {
+  states: new Map(),
+  epics: new Map(),
+  teams: new Map(),
+  projects: new Map()
+};
 
 describe('mapShortcutStory', () => {
   it('resolves state/epic/team names via the maps and iso-normalizes dates', () => {
@@ -164,6 +171,7 @@ describe('mapShortcutStory', () => {
     expect(s.state).toBe('Done');
     expect(s.epic).toBe('Summer promo');
     expect(s.team).toBe('Web');
+    expect(s.project).toBe('Acme Client Portal');
     expect(s.createdAt).toBe('2026-05-01');
     expect(s.startedAt).toBe('2026-05-03');
     expect(s.completedAt).toBe('2026-05-20');
@@ -177,6 +185,7 @@ describe('mapShortcutStory', () => {
     expect(s.state).toBeUndefined();
     expect(s.epic).toBeUndefined();
     expect(s.team).toBeUndefined();
+    expect(s.project).toBeUndefined();
   });
 
   it('drops the description entirely when includeDescription is off (default)', () => {
@@ -209,6 +218,7 @@ describe('shortcutEnrichment', () => {
         state: 'Done',
         epic: 'Summer promo',
         team: 'Web',
+        project: 'Acme Client Portal',
         created_at: '2026-05-01',
         started_at: '2026-05-03',
         completed_at: '2026-05-20',
@@ -259,7 +269,7 @@ function fakeShortcutHttp(
         headers: {},
         text: JSON.stringify(json)
       });
-      if (/\/(workflows|epics|groups)$/.test(req.url)) {
+      if (/\/(workflows|epics|groups|projects)$/.test(req.url)) {
         if (opts.failResolution) return { status: 500, ok: false, headers: {}, text: 'boom' };
         if (req.url.endsWith('/workflows')) return respond([{ states: [{ id: 500, name: 'Done' }] }]);
         return respond([]);
@@ -281,8 +291,8 @@ describe('fetchShortcutStories', () => {
     expect(out.get('57886')?.state).toBe('Done'); // resolved via /workflows
     const storyGets = requests.filter((r) => r.url.includes('/stories/'));
     expect(storyGets).toHaveLength(1);
-    // 3 resolution calls + 1 story = 4 total, independent of ref count.
-    expect(requests).toHaveLength(4);
+    // 4 resolution calls + 1 story = 5 total, independent of ref count.
+    expect(requests).toHaveLength(5);
   });
 
   it('skips a per-id 404 and continues the batch', async () => {
@@ -448,7 +458,7 @@ function fakeImportHttp(
         return respond(opts.search ? opts.search(body) : []);
       }
       if (req.url.endsWith('/workflows')) return respond([{ states: [{ id: 500, name: 'Done' }] }]);
-      if (/\/(epics|groups)$/.test(req.url)) return respond([]);
+      if (/\/(epics|groups|projects)$/.test(req.url)) return respond([]);
       return { status: 404, ok: false, headers: {}, text: 'not found' };
     }
   };
@@ -609,8 +619,8 @@ describe('fetchShortcutStoryItems', () => {
     expect(items[0].sourceId).toBe('57886');
     // Resolved via the once-fetched maps.
     expect((items[0].extraFrontmatter?.shortcut as Record<string, unknown>).state).toBe('Done');
-    // 1 member + 1 search + 3 maps.
-    expect(requests).toHaveLength(5);
+    // 1 member + 1 search + 4 maps.
+    expect(requests).toHaveLength(6);
     expect(requests.filter((r) => r.url.endsWith('/workflows'))).toHaveLength(1);
   });
 

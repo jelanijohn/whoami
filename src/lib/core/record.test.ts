@@ -300,6 +300,35 @@ describe('project dimension (plan §2)', () => {
     expect(promoted.frontmatter.project).toBeUndefined();
   });
 
+  it('promote unions override tags with the candidate’s own, deduped', async () => {
+    const candidate = makeEntry({
+      type: 'journal',
+      title: 'Tagged work',
+      private: true,
+      tags: ['b', 'c'],
+      extra: { source: 'github', source_id: 'gh-tags-1' }
+    });
+    const staged = await store.stageCandidate(candidate);
+    const promoted = await store.promoteCandidate(staged.path!, { tags: ['a', ' b '] });
+    expect(promoted.frontmatter.tags).toEqual(['b', 'c', 'a']);
+    // The union survives the round-trip to disk.
+    const onDisk = await store.readEntryFile(promoted.path!);
+    expect(onDisk.frontmatter.tags).toEqual(['b', 'c', 'a']);
+  });
+
+  it('promote without a tags override leaves the candidate’s tags untouched', async () => {
+    const candidate = makeEntry({
+      type: 'journal',
+      title: 'Tagged work',
+      private: true,
+      tags: ['keep-me'],
+      extra: { source: 'github', source_id: 'gh-tags-2' }
+    });
+    const staged = await store.stageCandidate(candidate);
+    const promoted = await store.promoteCandidate(staged.path!, { tags: [] });
+    expect(promoted.frontmatter.tags).toEqual(['keep-me']);
+  });
+
   it('relabelCandidateProject moves only matching staged candidates to a new slug', async () => {
     const mk = (sourceId: string, title: string, project?: string) =>
       makeEntry({

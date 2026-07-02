@@ -702,16 +702,16 @@ class AppState {
    * end rather than per item. A single item failing doesn't abort the rest;
    * the toast reports how many succeeded. Returns the count promoted. */
   async promoteCandidates(
-    items: { path: string; project?: string; date?: string; parent?: string }[]
+    items: { path: string; project?: string; date?: string; parent?: string; tags?: string[] }[]
   ): Promise<number> {
     if (!this.store || items.length === 0) return 0;
     return (
       (await this.guard(async () => {
         let ok = 0;
         let failed = 0;
-        for (const { path, project = '', date, parent } of items) {
+        for (const { path, project = '', date, parent, tags } of items) {
           try {
-            await this.store!.promoteCandidate(path, { project, date, parent });
+            await this.store!.promoteCandidate(path, { project, date, parent, tags });
             ok++;
           } catch {
             failed++;

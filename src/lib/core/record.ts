@@ -117,6 +117,10 @@ export interface PromoteOverrides {
    * {@link RecordStore.suggestShortcutParent}; the human can clear it. An empty
    * string clears; `undefined` leaves the candidate untouched. */
   parent?: string;
+  /** Tags to add on promote. Unioned with the candidate's existing tags
+   * (deduped, order preserved: existing first). `undefined` or `[]` leaves the
+   * candidate's tags untouched — the promote gate never strips staged tags. */
+  tags?: string[];
 }
 
 /** The candidate inbox (ingest-reduce plan §1): staged-but-unreviewed ingested
@@ -518,6 +522,11 @@ export class RecordStore {
       const parent = overrides.parent.trim();
       if (parent) (fm as Record<string, unknown>).parent = parent;
       else delete (fm as Record<string, unknown>).parent;
+    }
+    if (overrides.tags?.length) {
+      const existing = Array.isArray(fm.tags) ? fm.tags : [];
+      const added = overrides.tags.map((t) => t.trim()).filter(Boolean);
+      fm.tags = [...new Set([...existing, ...added])];
     }
 
     // --- Date gate (allow-undated-imports spec §C) --------------------------

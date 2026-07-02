@@ -83,6 +83,7 @@ export interface ShortcutStory {
   state?: string; // resolved workflow state NAME (see resolution maps)
   epic?: string; // resolved epic NAME, else undefined
   team?: string; // resolved group/team NAME, else undefined
+  project?: string; // resolved project NAME, else undefined
   appUrl?: string; // app_url
   createdAt?: string; // YYYY-MM-DD
   startedAt?: string; // YYYY-MM-DD
@@ -99,6 +100,7 @@ export interface ShortcutResolve {
   states: Map<number | string, string>;
   epics: Map<number | string, string>;
   teams: Map<number | string, string>;
+  projects: Map<number | string, string>;
 }
 
 /** Description cap — the same bounded-verbatim idiom as Asana's `notesSnippet`
@@ -148,6 +150,8 @@ export function mapShortcutStory(
   if (epic) story.epic = epic;
   const team = resolveName(resolve.teams, get(raw, 'group_id'));
   if (team) story.team = team;
+  const project = resolveName(resolve.projects, get(raw, 'project_id'));
+  if (project) story.project = project;
   const appUrl = asStr(get(raw, 'app_url'));
   if (appUrl) story.appUrl = appUrl;
   const createdAt = isoDate(get(raw, 'created_at'));
@@ -190,10 +194,11 @@ async function fetchNameMap(
   return map;
 }
 
-/** Fetch the three id→name resolution maps, one cached call each (spec §3.4):
- * `/workflows` (flattened `states[]`), `/epics`, `/groups`. A full enrichment
- * run therefore costs 3 + N-distinct-stories calls, independent of how many
- * commits referenced each ticket. */
+/** Fetch the four id→name resolution maps, one cached call each (spec §3.4):
+ * `/workflows` (flattened `states[]`), `/epics`, `/groups`, `/projects`. A full
+ * enrichment run therefore costs 4 + N-distinct-stories calls, independent of
+ * how many commits referenced each ticket. (`/projects` 404s on workspaces
+ * with Projects disabled — `fetchNameMap` degrades that to an empty map.) */
 export async function fetchShortcutResolutionMaps(http: Http, token: string): Promise<ShortcutResolve> {
   const list = (json: unknown): unknown[] => (Array.isArray(json) ? json : []);
   const idName = (v: unknown): [unknown, string | undefined] => [get(v, 'id'), asStr(get(v, 'name'))];
@@ -205,7 +210,8 @@ export async function fetchShortcutResolutionMaps(http: Http, token: string): Pr
   );
   const epics = await fetchNameMap(http, token, `${BASE}/epics`, (json) => list(json).map(idName));
   const teams = await fetchNameMap(http, token, `${BASE}/groups`, (json) => list(json).map(idName));
-  return { states, epics, teams };
+  const projects = await fetchNameMap(http, token, `${BASE}/projects`, (json) => list(json).map(idName));
+  return { states, epics, teams, projects };
 }
 
 /**
@@ -262,6 +268,7 @@ export function storyFrontmatter(story: ShortcutStory): { shortcut: Record<strin
   if (story.state) shortcut.state = story.state;
   if (story.epic) shortcut.epic = story.epic;
   if (story.team) shortcut.team = story.team;
+  if (story.project) shortcut.project = story.project;
   if (story.createdAt) shortcut.created_at = story.createdAt;
   if (story.startedAt) shortcut.started_at = story.startedAt;
   if (story.completedAt) shortcut.completed_at = story.completedAt;
@@ -501,7 +508,7 @@ export function mapShortcutStoryToRawItem(story: ShortcutStory, roles: ShortcutR
  * maps into a RawItem with its provable roles. The maps are fetched once per
  * run, and only after the filter confirms ≥ 1 match (a zero-match run costs 2
  * requests total). Per-item mapping failures land on `opts.errors`, never
- * abort the batch. Request budget: 1 (member) + windows-after-bisection + 3
+ * abort the batch. Request budget: 1 (member) + windows-after-bisection + 4
  * (maps) — comfortably under the 200/min limit for any sane window.
  */
 export async function fetchShortcutStoryItems(

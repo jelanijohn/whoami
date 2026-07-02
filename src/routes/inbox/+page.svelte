@@ -49,6 +49,10 @@
   // each row's own suggestion, an explicit slug (or none) overrides all.
   const KEEP = '__keep__';
   let bulkProject = $state(KEEP);
+  // Tags added to every bulk-promoted item (unioned with each candidate's own
+  // tags at the promote gate — never replacing what import staged).
+  let bulkTags = $state<string[]>([]);
+  let newTagText = $state('');
   // Per-item project overrides, keyed by path; absent ⇒ use the suggestion.
   let itemProjects = $state<Record<string, string>>({});
   // Per-item date overrides, keyed by path; absent ⇒ '' (use the row's own date).
@@ -224,17 +228,36 @@
   }
   function clearSelection() {
     selected.clear();
+    bulkTags = [];
+    newTagText = '';
   }
   function toggleSelectAll() {
     if (allVisibleSelected) for (const p of visiblePaths) selected.delete(p);
     else for (const p of visiblePaths) selected.add(p);
   }
 
+  // --- Bulk tags ---------------------------------------------------------
+  // The bulk bar offers the record's most-used tags as toggle chips; anything
+  // typed in becomes a removable chip alongside them.
+  const recordTags = $derived(app.tags.slice(0, 12).map((t) => t.tag));
+  const customTags = $derived(bulkTags.filter((t) => !recordTags.includes(t)));
+  function toggleBulkTag(tag: string) {
+    bulkTags = bulkTags.includes(tag) ? bulkTags.filter((t) => t !== tag) : [...bulkTags, tag];
+  }
+  function addNewTags() {
+    const parts = newTagText
+      .split(/[,\n]/)
+      .map((t) => t.trim())
+      .filter(Boolean);
+    if (parts.length) bulkTags = [...new Set([...bulkTags, ...parts])];
+    newTagText = '';
+  }
+
   // --- Promote / reject (single + bulk), routed through project resolution ---
   // The project-resolution flow below is carried over unchanged from the prior
   // inbox: promoting an item whose slug isn't a project yet walks the distinct
   // missing slugs one at a time (create / file-under / promote-anyway).
-  type PromoteItem = { path: string; project: string; date?: string; parent?: string };
+  type PromoteItem = { path: string; project: string; date?: string; parent?: string; tags?: string[] };
   let promoteItems = $state<PromoteItem[] | null>(null);
   let unresolved = $state<string[]>([]);
   let resolveTotal = $state(0);
@@ -286,7 +309,8 @@
       path: i.path,
       project: resolutions.get(i.project.trim()) ?? i.project,
       date: i.date,
-      parent: i.parent
+      parent: i.parent,
+      tags: i.tags
     }));
     reset();
     clearSelection();
@@ -340,7 +364,8 @@
         path: c.path!,
         project: bulkProject === KEEP ? getProject(c) : bulkProject === '' ? '' : bulkProject,
         date: getDate(c) || undefined,
-        parent: getParent(c) || undefined
+        parent: getParent(c) || undefined,
+        tags: bulkTags.length ? [...bulkTags] : undefined
       }));
     if (items.length === 0) return;
     clearSelection();
@@ -601,38 +626,89 @@
     <!-- 3. Bulk action bar (sticky, when ≥1 selected) -->
     {#if selectedCount > 0}
       <div
-        class="sticky top-2 z-[5] mt-3 flex flex-wrap items-center gap-[9px] rounded-[12px] px-3.5 py-2.5 backdrop-blur"
+        class="sticky top-2 z-[5] mt-3 flex flex-col gap-[9px] rounded-[12px] px-3.5 py-2.5 backdrop-blur"
         style="border:1px solid #c8d2f3;background:rgba(244,247,255,0.92);box-shadow:0 6px 20px rgba(40,50,90,0.1)"
       >
-        <span class="text-[13px] font-[650] text-[#2a3a7a]">{selectedCount} selected</span>
-        <button onclick={clearSelection} class="text-[12px] text-[#7a86b8]">Clear</button>
-        <div class="ml-auto flex flex-wrap items-center gap-[9px]">
-          <span class="text-[11px] uppercase tracking-[0.04em] text-[#7a86b8]">Project</span>
-          <select
-            bind:value={bulkProject}
-            class="h-8 rounded-lg border border-[var(--color-line)] bg-white px-2 text-[13px] text-[var(--color-ink)] dark:bg-[var(--color-bar)]"
-          >
-            <option value={KEEP}>— keep each suggestion —</option>
-            <option value="">— none —</option>
-            {#each app.projects as p (p.slug)}
-              <option value={p.slug}>{p.entry.frontmatter.title}</option>
-            {/each}
-          </select>
+        <div class="flex flex-wrap items-center gap-[9px]">
+          <span class="text-[13px] font-[650] text-[#2a3a7a]">{selectedCount} selected</span>
+          <button onclick={clearSelection} class="text-[12px] text-[#7a86b8]">Clear</button>
+          <div class="ml-auto flex flex-wrap items-center gap-[9px]">
+            <span class="text-[11px] uppercase tracking-[0.04em] text-[#7a86b8]">Project</span>
+            <select
+              bind:value={bulkProject}
+              class="h-8 rounded-lg border border-[var(--color-line)] bg-white px-2 text-[13px] text-[var(--color-ink)] dark:bg-[var(--color-bar)]"
+            >
+              <option value={KEEP}>— keep each suggestion —</option>
+              <option value="">— none —</option>
+              {#each app.projects as p (p.slug)}
+                <option value={p.slug}>{p.entry.frontmatter.title}</option>
+              {/each}
+            </select>
+            <button
+              onclick={() => void rejectSelected()}
+              disabled={app.busy}
+              class="inline-flex h-8 items-center gap-1.5 rounded-lg border bg-white px-3 text-[12px] font-semibold text-[var(--color-private)] disabled:opacity-50"
+              style="border-color:#ecc9b9"
+            >
+              <Icon name="close" size={14} /> Reject {selectedCount}
+            </button>
+            <button
+              onclick={() => void promoteSelected()}
+              disabled={app.busy}
+              class="inline-flex h-8 items-center gap-1.5 rounded-lg bg-[var(--color-accent)] px-3 text-[12px] font-semibold text-white hover:opacity-90 disabled:opacity-50"
+            >
+              <Icon name="check" size={14} strokeWidth={3} /> Promote {selectedCount}
+            </button>
+          </div>
+        </div>
+        <!-- Tags applied to every promoted item, on top of each item's own tags -->
+        <div class="flex flex-wrap items-center gap-1.5 border-t pt-[9px]" style="border-color:#dbe3f8">
+          <span class="text-[11px] uppercase tracking-[0.04em] text-[#7a86b8]">Tags</span>
+          {#each recordTags as t (t)}
+            {@const sel = bulkTags.includes(t)}
+            <button
+              onclick={() => toggleBulkTag(t)}
+              class="rounded-full px-2.5 py-1 text-[12px] font-medium transition-all duration-100"
+              style={sel
+                ? 'background:rgba(58,90,190,0.12);border:1px solid rgba(58,90,190,0.4);color:#2a3a7a;'
+                : 'background:white;border:1px solid #c8d2f3;color:#7a86b8;'}
+            >
+              #{t}
+            </button>
+          {/each}
+          {#each customTags as t (t)}
+            <button
+              onclick={() => toggleBulkTag(t)}
+              title="Remove this tag"
+              class="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[12px] font-medium"
+              style="background:rgba(58,90,190,0.12);border:1px solid rgba(58,90,190,0.4);color:#2a3a7a;"
+            >
+              #{t} <Icon name="close" size={12} />
+            </button>
+          {/each}
+          <input
+            bind:value={newTagText}
+            placeholder="new tag…"
+            onkeydown={(e) => {
+              if (e.key === 'Enter') addNewTags();
+            }}
+            class="h-7 w-32 rounded-lg border bg-white px-2 text-[12px] outline-none placeholder:text-[#8e99c4] focus:border-[var(--color-accent)]"
+            style="border-color:#c8d2f3;color:#1d2742"
+          />
           <button
-            onclick={() => void rejectSelected()}
-            disabled={app.busy}
-            class="inline-flex h-8 items-center gap-1.5 rounded-lg border bg-white px-3 text-[12px] font-semibold text-[var(--color-private)] disabled:opacity-50"
-            style="border-color:#ecc9b9"
+            onclick={addNewTags}
+            disabled={!newTagText.trim()}
+            title="Add tag"
+            class="h-7 rounded-lg border bg-white px-2 text-[12px] font-semibold text-[#2a3a7a] disabled:opacity-50"
+            style="border-color:#c8d2f3"
           >
-            <Icon name="close" size={14} /> Reject {selectedCount}
+            +
           </button>
-          <button
-            onclick={() => void promoteSelected()}
-            disabled={app.busy}
-            class="inline-flex h-8 items-center gap-1.5 rounded-lg bg-[var(--color-accent)] px-3 text-[12px] font-semibold text-white hover:opacity-90 disabled:opacity-50"
-          >
-            <Icon name="check" size={14} strokeWidth={3} /> Promote {selectedCount}
-          </button>
+          {#if bulkTags.length}
+            <span class="text-[11px] text-[#7a86b8]"
+              >{bulkTags.length} tag{bulkTags.length === 1 ? '' : 's'} will be added to each promoted item</span
+            >
+          {/if}
         </div>
       </div>
     {/if}

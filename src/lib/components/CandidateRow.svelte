@@ -62,6 +62,13 @@
   const triageReason = $derived(typeof fm.triage_reason === 'string' ? fm.triage_reason : '');
   const triageBy = $derived(fm.triage_source === 'llm' ? 'model' : 'prefilter');
   const tags = $derived(tagsOf(candidate));
+  // Shortcut project context line (story import + enriched GitHub items both
+  // carry `shortcut.project` when the workspace uses Projects).
+  const scProject = $derived.by(() => {
+    const sc = fm.shortcut;
+    const p = sc && typeof sc === 'object' ? (sc as Record<string, unknown>).project : undefined;
+    return typeof p === 'string' ? p : '';
+  });
   const excerpt = $derived(
     candidate.body.length > 280 ? candidate.body.slice(0, 280).trimEnd() + '…' : candidate.body
   );
@@ -209,6 +216,12 @@
 
 {#if expanded}
   <div class="jv-rise" style="padding:2px 16px 15px 44px;">
+    {#if scProject}
+      <p class="mb-1.5 mt-0 flex items-center gap-1.5 text-[11.5px] text-[var(--color-muted)]">
+        <span class="shrink-0"><Icon name="work" size={14} /></span>
+        <span>{scProject}</span>
+      </p>
+    {/if}
     {#if excerpt.trim()}
       <p class="m-0 whitespace-pre-wrap text-[13px] leading-[1.55] text-[var(--jv-body)]">{excerpt}</p>
     {/if}
