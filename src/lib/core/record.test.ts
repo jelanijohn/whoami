@@ -6,6 +6,7 @@ import { createNodePlatform } from './platform-node';
 import { RecordStore, provenanceKey } from './record';
 import { makeEntry } from './entry';
 import { DEFAULT_RUBRIC, type TriageResult } from './triage/types';
+import type { ShortcutStory } from './ingest/shortcut';
 import type { Llm, LlmCompletionRequest, Platform } from './types';
 
 let root: string;
@@ -753,5 +754,118 @@ describe('wins from journal (wins-from-journal spec §3)', () => {
     // …and an index row (read goes through the index).
     const indexed = await store.getEntry(win.frontmatter.id);
     expect(indexed?.frontmatter.title).toBe('Grounded win');
+  });
+});
+
+describe('enrichCandidates backfills Shortcut facts into the inbox (shortcut spec §6)', () => {
+  const story = (id: string, name: string): ShortcutStory => ({
+    id,
+    name,
+    type: 'feature',
+    state: 'Done',
+    completedAt: '2026-05-20'
+  });
+
+  /** A fetcher that records each call's ids and serves from `byId`. */
+  const recordingFetcher = (byId: Record<string, ShortcutStory>, calls: string[][]) => {
+    return async (ids: string[]) => {
+      calls.push([...ids]);
+      return new Map(ids.filter((id) => byId[id]).map((id) => [id, byId[id]]));
+    };
+  };
+
+  const stageCommit = (sourceId: string, title: string, extra: Record<string, unknown> = {}) =>
+    store.stageCandidate(
+      makeEntry({
+        type: 'journal',
+        title,
+        date: '2026-06-10',
+        body: `GitHub commit in acme/web.\nSHA: ${sourceId}.`,
+        extra: { source: 'github', source_id: sourceId, ...extra }
+      })
+    );
+
+  it('enriches a ref-bearing candidate in place, re-extracting from a pre-feature body', async () => {
+    // Pre-feature: NO shortcut_ids frontmatter — the ref lives only in the title.
+    await stageCommit('sha1', 'sc-57886 promo banner disclaimer');
+    const calls: string[][] = [];
+    const res = await store.enrichCandidates(
+      recordingFetcher({ '57886': story('57886', 'Promo banner disclaimer') }, calls)
+    );
+    expect(res).toEqual({ total: 1, enriched: 1, storiesFetched: 1 });
+    const [c] = await store.listCandidates();
+    expect(c.frontmatter.shortcut_ids).toEqual(['57886']);
+    expect((c.frontmatter.shortcut as Record<string, unknown>).state).toBe('Done');
+    expect(c.body).toContain('--- Shortcut ---');
+    expect(c.body).toContain('sc-57886 (feature, Done): Promo banner disclaimer');
+    // The original composed body is still the head of the file.
+    expect(c.body!.startsWith('GitHub commit in acme/web.')).toBe(true);
+  });
+
+  it('fetches once across the whole inbox (union of refs, one fetcher call)', async () => {
+    await stageCommit('sha1', 'sc-1 first commit');
+    await stageCommit('sha2', 'sc-1 second commit on the same ticket');
+    await stageCommit('sha3', 'sc-2 other ticket');
+    const calls: string[][] = [];
+    const res = await store.enrichCandidates(
+      recordingFetcher({ '1': story('1', 'One'), '2': story('2', 'Two') }, calls)
+    );
+    expect(calls).toHaveLength(1); // ONE call for the whole inbox…
+    expect([...calls[0]].sort()).toEqual(['1', '2']); // …with deduped ids
+    expect(res.enriched).toBe(3);
+    expect(res.storiesFetched).toBe(2);
+  });
+
+  it('is idempotent: a re-run rewrites nothing and never duplicates the block', async () => {
+    await stageCommit('sha1', 'sc-7 thing');
+    const byId = { '7': story('7', 'Thing') };
+    await store.enrichCandidates(recordingFetcher(byId, []));
+    const res2 = await store.enrichCandidates(recordingFetcher(byId, []));
+    expect(res2.enriched).toBe(0); // byte-identical ⇒ untouched
+    const [c] = await store.listCandidates();
+    expect(c.body!.match(/--- Shortcut ---/g)).toHaveLength(1);
+    // A changed story updates the block in place instead of appending a second.
+    await store.enrichCandidates(recordingFetcher({ '7': { ...byId['7'], state: 'Shipped' } }, []));
+    const [after] = await store.listCandidates();
+    expect(after.body!.match(/--- Shortcut ---/g)).toHaveLength(1);
+    expect(after.body).toContain('(feature, Shipped)');
+  });
+
+  it('leaves ref-free candidates untouched and skips the fetch when none match', async () => {
+    await stageCommit('sha1', 'plain refactor, no ticket');
+    const calls: string[][] = [];
+    const res = await store.enrichCandidates(recordingFetcher({}, calls));
+    expect(res).toEqual({ total: 1, enriched: 0, storiesFetched: 0 });
+    expect(calls).toHaveLength(0); // no refs ⇒ no fetch at all
+    const [c] = await store.listCandidates();
+    expect(c.body).not.toContain('--- Shortcut ---');
+    expect(c.frontmatter.shortcut_ids).toBeUndefined();
+  });
+
+  it('never alters title/date and never touches triage_* keys', async () => {
+    await stageCommit('sha1', 'sc-9 fix', {
+      triage_signal: 'keep',
+      triage_reason: 'shipped (merged)',
+      triage_source: 'prefilter',
+      triage_at: '2020-01-01T00:00:00.000Z'
+    });
+    await store.enrichCandidates(recordingFetcher({ '9': story('9', 'Fix') }, []));
+    const [c] = await store.listCandidates();
+    expect(c.frontmatter.title).toBe('sc-9 fix'); // the clean title is Stage-2's job
+    expect(c.frontmatter.date).toBe('2026-06-10'); // completed_at never overwrites date
+    expect(c.frontmatter.triage_signal).toBe('keep');
+    expect(c.frontmatter.triage_at).toBe('2020-01-01T00:00:00.000Z');
+    expect((c.frontmatter.shortcut as Record<string, unknown>).completed_at).toBe('2026-05-20');
+  });
+
+  it('a custom refPattern drives the re-extraction', async () => {
+    await stageCommit('sha1', 'ABC-33 client ticket');
+    const calls: string[][] = [];
+    await store.enrichCandidates(recordingFetcher({ '33': story('33', 'Client thing') }, calls), {
+      refPattern: 'ABC-\\d+'
+    });
+    expect(calls).toEqual([['33']]);
+    const [c] = await store.listCandidates();
+    expect(c.frontmatter.shortcut_ids).toEqual(['33']);
   });
 });

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { app, type LiveSource, type Feed, type FeedKind } from '$lib/state.svelte';
+  import { app, type LiveSource, type TokenSource, type Feed, type FeedKind } from '$lib/state.svelte';
   import { isPickerKind } from '$lib/core';
   import { closeDatePicker } from '$lib/actions/closeDatePicker';
   import CredentialHelp from '$lib/components/CredentialHelp.svelte';
@@ -7,7 +7,7 @@
   import Icon from '$lib/components/Icon.svelte';
 
   // Transient token-entry boxes (the saved value lives in the keyring, never here).
-  let tokens = $state<Record<LiveSource, string>>({ github: '', asana: '', gmail: '' });
+  let tokens = $state<Record<TokenSource, string>>({ github: '', asana: '', gmail: '', shortcut: '' });
 
   // Per-source "Save as feed" label drafts (inline text inputs, spec §6.1).
   let feedLabels = $state<Record<string, string>>({});
@@ -61,7 +61,7 @@
     if (app.store) app.refreshTokenPresence();
   });
 
-  async function saveToken(source: LiveSource) {
+  async function saveToken(source: TokenSource) {
     await app.setSourceToken(source, tokens[source]);
     tokens[source] = '';
   }
@@ -218,7 +218,7 @@
     'inline-flex items-center gap-1.5 rounded bg-[var(--color-accent)] px-3 py-1.5 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50';
 </script>
 
-{#snippet tokenRow(source: LiveSource, placeholder: string)}
+{#snippet tokenRow(source: TokenSource, placeholder: string)}
   <div class="flex flex-wrap items-end gap-2">
     <label class="flex flex-col text-xs text-[var(--color-muted)]">
       Token (stored in OS keyring)
@@ -717,6 +717,29 @@
                       One repo per run — change size is included; the diff is never imported.
                     </p>
                   {/if}
+                  <div class="space-y-2 border-t border-dashed border-[var(--color-line)] pt-3">
+                    <h4 class="text-xs font-semibold">Shortcut ticket enrichment</h4>
+                    <p class="text-xs text-[var(--color-muted)]">
+                      Commits/PRs mentioning a ticket (e.g. <code>sc-57886</code>) are always tagged with
+                      it. With a token saved, imports also pull that story's metadata (name, state, epic…)
+                      onto the candidate — one fetch per distinct ticket.
+                    </p>
+                    {@render tokenRow('shortcut', 'Shortcut API token')}
+                    <div class="flex flex-wrap items-end gap-4">
+                      <label class="flex flex-col text-xs text-[var(--color-muted)]">
+                        Ticket ref pattern (regex)
+                        <input bind:value={app.importSettings.shortcut.refPattern} placeholder="sc-\d+" class="{inputCls} w-40 font-mono" />
+                      </label>
+                      <label class="flex items-center gap-2 text-xs text-[var(--color-muted)]">
+                        <input type="checkbox" bind:checked={app.importSettings.shortcut.enrich} />
+                        Enrich during import
+                      </label>
+                      <label class="flex items-center gap-2 text-xs text-[var(--color-muted)]" title="Client-ticket prose stays out unless you opt in; bounded to ~500 chars">
+                        <input type="checkbox" bind:checked={app.importSettings.shortcut.includeDescription} />
+                        Include story description
+                      </label>
+                    </div>
+                  </div>
                   <div class="flex flex-wrap items-center gap-2 border-t border-dashed border-[var(--color-line)] pt-3">
                     <button
                       class={runCls}

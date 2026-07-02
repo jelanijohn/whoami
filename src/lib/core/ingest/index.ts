@@ -10,6 +10,7 @@ export {
   GITHUB_TOKEN_NAME,
   ASANA_TOKEN_NAME,
   GMAIL_TOKEN_NAME,
+  SHORTCUT_TOKEN_NAME,
   type IngestSource,
   type RawItem,
   type IngestReport
@@ -40,6 +41,19 @@ export {
   type AsanaFetchOpts,
   type AsanaProject
 } from './asana';
+export {
+  DEFAULT_SHORTCUT_REF,
+  extractShortcutRefs,
+  mapShortcutStory,
+  fetchShortcutResolutionMaps,
+  fetchShortcutStories,
+  shortcutEnrichment,
+  stripShortcutBlock,
+  enrichRawItemsWithShortcut,
+  validateShortcut,
+  type ShortcutStory,
+  type ShortcutResolve
+} from './shortcut';
 export {
   internalDateToIso,
   header,

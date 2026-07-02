@@ -53,6 +53,16 @@ export const credentialHelp: Record<string, CredentialHelp> = {
     note: 'This is a short-lived OAuth access token, not a password. Metadata-only — Who Am I reads subjects and snippets to build candidates, never full message bodies.',
     docsUrl: 'https://developers.google.com/gmail/api/auth/scopes'
   },
+  shortcut: {
+    title: 'Shortcut API token',
+    steps: [
+      'Open app.shortcut.com → Settings → Your Account → API Tokens.',
+      'Name a new token and click “Generate Token”.',
+      'Copy the token and paste it here.'
+    ],
+    note: 'A Shortcut token grants complete account access, so it lives only in your OS keyring. Who Am I uses it read-only, to enrich GitHub imports that reference a ticket (sc-12345) with that story’s metadata.',
+    docsUrl: 'https://developer.shortcut.com/api/rest/v3#Authentication'
+  },
   anthropic: {
     title: 'Anthropic API key',
     steps: [

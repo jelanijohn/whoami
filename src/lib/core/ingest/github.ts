@@ -18,6 +18,7 @@ import type { Http } from '../types';
 import { slugify } from '../ids';
 import { bearer, getJson, postJson } from './http';
 import { asNum, asStr, get, isoDate, type RawItem } from './types';
+import { DEFAULT_SHORTCUT_REF, extractShortcutRefs } from './shortcut';
 
 const DEFAULT_API = 'https://api.github.com';
 
@@ -56,6 +57,11 @@ export interface GithubFetchOpts {
   branch?: string;
   /** Commit mode only: drop merge commits (parents > 1). Default true (D5). */
   excludeMerges?: boolean;
+
+  /** Shortcut ticket-reference pattern (regex source) the mappers extract with
+   *  (shortcut-enrichment spec D5). Omitted ⇒ {@link DEFAULT_SHORTCUT_REF}.
+   *  Extraction is always-on, deterministic, and token-free. */
+  shortcutRefPattern?: string;
 }
 
 export const DEFAULT_COMMENT_SCOPE: 'self' | 'all' = 'self';
@@ -114,7 +120,7 @@ const AUTHORED_ITEMS_QUERY = `query AuthoredItems($q: String!, $first: Int!, $cu
 /** Map one GraphQL `search` node (Issue or PullRequest) into a RawItem. Pure —
  * fixture-tested. Output is byte-identical to the old REST mapper for every
  * shared field; change size is purely additive (PR nodes only). */
-export function mapGithubGraphqlNode(node: unknown): RawItem {
+export function mapGithubGraphqlNode(node: unknown, refPattern = DEFAULT_SHORTCUT_REF): RawItem {
   const isPr = asStr(get(node, '__typename')) === 'PullRequest';
   const repo = asStr(get(node, 'repository', 'nameWithOwner'));
   // GraphQL state is upper-case (OPEN | CLOSED | MERGED); lower-case it to match
@@ -156,6 +162,17 @@ export function mapGithubGraphqlNode(node: unknown): RawItem {
   const desc = asStr(get(node, 'body'))?.trim();
   if (desc) body += `\n\n--- Description ---\n${desc}`;
 
+  const title = asStr(get(node, 'title')) ?? '';
+  // Shortcut ticket refs (shortcut-enrichment spec §2.2): real provenance, so
+  // they persist to the candidate and into the record on promote. The first id
+  // also rides string-valued `meta` for prefilter/cluster rules. No ref ⇒
+  // neither key, keeping ref-free output byte-identical to before.
+  const refs = extractShortcutRefs(`${title}\n${body}`, refPattern);
+  if (refs.length > 0) {
+    extraFrontmatter.shortcut_ids = refs;
+    meta.shortcut_id = refs[0];
+  }
+
   // MUST be databaseId, not the node `id`: databaseId equals the REST numeric id
   // every promoted/rejected item was deduped against — using the base64 node id
   // would silently re-propose handled items.
@@ -164,7 +181,7 @@ export function mapGithubGraphqlNode(node: unknown): RawItem {
   return {
     source: 'github',
     sourceId: dbId !== undefined && dbId !== null ? String(dbId) : '',
-    title: asStr(get(node, 'title')) ?? '',
+    title,
     // The event date: when work concluded if it did, else when it started.
     date: closed ?? created ?? '',
     url: asStr(get(node, 'url')),
@@ -181,7 +198,7 @@ export function mapGithubGraphqlNode(node: unknown): RawItem {
  * The commit node carries no repository, so `repo` (`owner/name`) is passed in
  * from opts. Imports metadata + the verbatim message + change-size counts only;
  * NEVER the diff (commits spec §1.2, D4). */
-export function mapGithubCommitNode(node: unknown, repo: string): RawItem {
+export function mapGithubCommitNode(node: unknown, repo: string, refPattern = DEFAULT_SHORTCUT_REF): RawItem {
   const oid = asStr(get(node, 'oid')) ?? '';
   const headline = asStr(get(node, 'messageHeadline')) ?? '';
   const date = isoDate(get(node, 'authoredDate')) ?? '';
@@ -205,6 +222,19 @@ export function mapGithubCommitNode(node: unknown, repo: string): RawItem {
   const message = asStr(get(node, 'messageBody'))?.trim();
   if (message) body += `\n\n--- Message ---\n${message}`;
 
+  const meta: Record<string, string> = { type: 'commit', repo, parents: String(parents) };
+  const extraFrontmatter: Record<string, unknown> = {
+    change_size: { additions, deletions, changed_files: changedFiles },
+    commit_sha: oid
+  };
+  // Shortcut ticket refs (shortcut-enrichment spec §2.2) — same idiom as the
+  // items mapper: provenance in extraFrontmatter, first id in string meta.
+  const refs = extractShortcutRefs(`${headline}\n${body}`, refPattern);
+  if (refs.length > 0) {
+    extraFrontmatter.shortcut_ids = refs;
+    meta.shortcut_id = refs[0];
+  }
+
   return {
     source: 'github',
     sourceId: oid,
@@ -215,11 +245,8 @@ export function mapGithubCommitNode(node: unknown, repo: string): RawItem {
     suggestedType: 'journal',
     suggestedTags: ['github', 'commit'],
     suggestedProject: slugify(repo),
-    meta: { type: 'commit', repo, parents: String(parents) },
-    extraFrontmatter: {
-      change_size: { additions, deletions, changed_files: changedFiles },
-      commit_sha: oid
-    }
+    meta,
+    extraFrontmatter
   };
 }
 
@@ -330,7 +357,7 @@ async function fetchGithubCommits(http: Http, opts: GithubFetchOpts): Promise<Ra
       // The only acquisition-side filter (D5/§1.6): structural, user-visible.
       const parents = asNum(get(node, 'parents', 'totalCount')) ?? 0;
       if (excludeMerges && parents > 1) continue;
-      items.push(mapGithubCommitNode(node, repo));
+      items.push(mapGithubCommitNode(node, repo, opts.shortcutRefPattern));
       if (items.length >= cap) break;
     }
     if (items.length >= cap) break;
@@ -476,7 +503,7 @@ export async function fetchGithub(http: Http, opts: GithubFetchOpts): Promise<Ra
     if (!Array.isArray(nodes)) throw new Error('unexpected GitHub response (no search.nodes array)');
 
     for (const node of nodes) {
-      const item = mapGithubGraphqlNode(node);
+      const item = mapGithubGraphqlNode(node, opts.shortcutRefPattern);
       if (fetchDiscussion) {
         const repo = asStr(get(node, 'repository', 'nameWithOwner'));
         const number = asNum(get(node, 'number'));

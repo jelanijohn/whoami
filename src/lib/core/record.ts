@@ -12,6 +12,13 @@
 
 import type { Entry, EntryFrontmatter, Platform, Profile } from './types';
 import type { RawItem } from './ingest/types';
+// Leaf module (like triage below) — shortcut.ts never imports record, no cycle.
+import {
+  extractShortcutRefs,
+  shortcutEnrichment,
+  stripShortcutBlock,
+  type ShortcutStory
+} from './ingest/shortcut';
 import {
   ensureSchema,
   rebuild,
@@ -410,6 +417,66 @@ export class RecordStore {
       updated++;
     }
     return updated;
+  }
+
+  /**
+   * Enrich staged candidates from Shortcut in place (shortcut-enrichment spec
+   * §6, the backfill path). Re-extracts refs from each candidate's title + body
+   * (NOT only frontmatter — pre-feature candidates have no `shortcut_ids` key
+   * yet), dedupes story fetches across the whole inbox (two-pass: union all
+   * refs, ONE `fetcher` call, then rewrite), folds story facts into frontmatter
+   * and appends the `--- Shortcut ---` block to the body. Idempotent: any
+   * existing block is replaced, and a candidate is rewritten only when
+   * enrichment actually changes its bytes. Never promotes/rejects/moves/
+   * deletes; never alters `title`/`date` or the `triage_*` keys.
+   *
+   * The fetcher is injected (a closure over http + token + includeDescription)
+   * so the store stays free of the Http/Secrets seams — consistent with taking
+   * an `Llm` for {@link draftWins} rather than constructing one.
+   */
+  async enrichCandidates(
+    fetcher: (ids: string[]) => Promise<Map<string, ShortcutStory>>,
+    opts: { refPattern?: string } = {}
+  ): Promise<{ total: number; enriched: number; storiesFetched: number }> {
+    const candidates = await this.listCandidates();
+
+    // Pass 1 — union every candidate's refs (frontmatter tag ∪ re-extraction).
+    const refsByPath = new Map<string, string[]>();
+    for (const c of candidates) {
+      const fm = c.frontmatter as Record<string, unknown>;
+      const tagged = Array.isArray(fm.shortcut_ids)
+        ? fm.shortcut_ids.filter((v): v is string => typeof v === 'string')
+        : [];
+      const extracted = extractShortcutRefs(
+        `${typeof fm.title === 'string' ? fm.title : ''}\n${c.body ?? ''}`,
+        opts.refPattern
+      );
+      const refs = [...new Set([...tagged, ...extracted])];
+      if (refs.length > 0 && c.path) refsByPath.set(c.path, refs);
+    }
+    const allIds = [...new Set([...refsByPath.values()].flat())];
+    if (allIds.length === 0) return { total: candidates.length, enriched: 0, storiesFetched: 0 };
+
+    const stories = await fetcher(allIds);
+
+    // Pass 2 — rewrite each ref-bearing candidate whose story resolved.
+    let enriched = 0;
+    for (const c of candidates) {
+      const refs = c.path ? refsByPath.get(c.path) : undefined;
+      if (!refs) continue;
+      const story = refs.map((id) => stories.get(id)).find((s) => s !== undefined);
+      if (!story) continue;
+      const { frontmatter, bodyBlock } = shortcutEnrichment(story);
+      const nextFm = { ...c.frontmatter, shortcut_ids: refs, ...frontmatter };
+      const base = stripShortcutBlock(c.body ?? '');
+      const nextBody = base ? `${base}\n\n${bodyBlock}` : bodyBlock;
+      const next: Entry = { ...c, frontmatter: nextFm as EntryFrontmatter, body: nextBody };
+      // Byte-identical ⇒ leave the file untouched (retriageCandidates idiom).
+      if (serializeEntry(next) === serializeEntry(c)) continue;
+      await this.writeEntryFile(next);
+      enriched++;
+    }
+    return { total: candidates.length, enriched, storiesFetched: stories.size };
   }
 
   /** Write a candidate file into the inbox. Deterministic filename per

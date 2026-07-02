@@ -95,7 +95,11 @@ explicit promote.**
   fixture-tested; the layer never touches the record, secrets, or the index
   directly. The GitHub adapter imports either the issues & PRs you authored or, per
   run, a repo's commits you authored (change-size counts and your message — never
-  the diff). The website importer fetches only the pages you enter (and a sitemap
+  the diff). GitHub items that mention a Shortcut ticket (`sc-12345`, pattern
+  configurable) are always tagged with it; with a Shortcut token saved, imports —
+  and an inbox backfill button — also enrich them with that story's metadata
+  (name, state, epic…), one fetch per distinct ticket, description off by
+  default. The website importer fetches only the pages you enter (and a sitemap
   you point at) — it is not a crawler — and treats the polished prose as a prompt
   to write the rawer truth underneath. The NeuroSkill importer reads past EEG
   sessions from another app's local SQLite (read-only, `eeg_timeseries` + `labels`

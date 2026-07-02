@@ -22,9 +22,13 @@
     type InboxContext
   } from '$lib/inbox/grouping';
 
-  // Load the staged candidates whenever a record is open.
+  // Load the staged candidates whenever a record is open. Token presence
+  // drives the "Enrich from Shortcut" affordance.
   $effect(() => {
-    if (app.store) app.loadCandidates();
+    if (app.store) {
+      app.loadCandidates();
+      app.refreshTokenPresence();
+    }
   });
 
   // --- Filter / sort / group UI state (all client-side over app.candidates) --
@@ -354,6 +358,16 @@
           disabled={app.busy}
           class="h-9 w-52 rounded-[9px] border border-[var(--color-line)] bg-white px-2.5 text-[12.5px] text-[var(--color-ink)] disabled:opacity-50 dark:bg-[var(--color-bar)]"
         />
+      {/if}
+      {#if app.tokenPresent.shortcut}
+        <button
+          onclick={() => void app.enrichInboxFromShortcut()}
+          disabled={app.busy}
+          title="Backfill Shortcut story metadata onto candidates that reference a ticket (sc-…) — one fetch per distinct ticket, annotation only"
+          class="inline-flex h-9 items-center gap-1.5 rounded-[9px] border border-[var(--color-line)] bg-white px-3 text-[12.5px] font-medium text-[var(--color-muted)] disabled:opacity-50 dark:bg-[var(--color-bar)]"
+        >
+          <Icon name="bolt" size={15} /> Enrich from Shortcut
+        </button>
       {/if}
       <button
         onclick={() => void app.retriageInbox()}

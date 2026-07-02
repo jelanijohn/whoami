@@ -56,6 +56,11 @@ import {
   GITHUB_TOKEN_NAME,
   ASANA_TOKEN_NAME,
   GMAIL_TOKEN_NAME,
+  SHORTCUT_TOKEN_NAME,
+  DEFAULT_SHORTCUT_REF,
+  enrichRawItemsWithShortcut,
+  fetchShortcutStories,
+  validateShortcut,
   type AsanaFetchOpts,
   type AsanaProject,
   type Database,
@@ -108,11 +113,17 @@ export type JournalGroupBy = 'project' | 'type' | 'month';
 /** Live (API) ingest sources. LinkedIn is import-only (archive), handled apart. */
 export type LiveSource = 'github' | 'asana' | 'gmail';
 
-/** Keyring entry name per live source — the token never leaves the keyring. */
-const TOKEN_NAMES: Record<LiveSource, string> = {
+/** Everything with a keyring token: the live sources plus Shortcut, which is an
+ * *enrichment* of GitHub items, not an ingest source (shortcut spec §11 note) —
+ * it shares the connection-settings surface but never stages items itself. */
+export type TokenSource = LiveSource | 'shortcut';
+
+/** Keyring entry name per token holder — the token never leaves the keyring. */
+const TOKEN_NAMES: Record<TokenSource, string> = {
   github: GITHUB_TOKEN_NAME,
   asana: ASANA_TOKEN_NAME,
-  gmail: GMAIL_TOKEN_NAME
+  gmail: GMAIL_TOKEN_NAME,
+  shortcut: SHORTCUT_TOKEN_NAME
 };
 
 /** Non-secret import parameters, persisted on this machine (outside the record,
@@ -167,6 +178,17 @@ export interface ImportSettings {
   /** Triage settings (spec §6): the per-import LLM flag (off by default) plus
    * optional rubric overrides. Persisted here (localStorage), never the record. */
   triage: { useLlm: boolean; rubric?: Partial<TriageRubric> };
+  /** Shortcut enrichment of GitHub imports (shortcut spec §7.1). The token is
+   * NOT here — it lives in the keyring like the others. */
+  shortcut: {
+    /** Owner-editable ticket-ref pattern (regex source), default `sc-\d+` (D5). */
+    refPattern: string;
+    /** Run Shortcut enrichment during GitHub import when a token is present. */
+    enrich: boolean;
+    /** Pull the story description verbatim (bounded). Default FALSE (D2) —
+     * client-ticket prose stays out unless deliberately opted into. */
+    includeDescription: boolean;
+  };
 }
 
 export const DEFAULT_IMPORT_SETTINGS: ImportSettings = {
@@ -190,7 +212,8 @@ export const DEFAULT_IMPORT_SETTINGS: ImportSettings = {
   website: { urls: '', sitemapUrl: '', maxPages: '25', allowUndated: false },
   resume: { allowUndated: false },
   neuroskill: { dataDir: '' },
-  triage: { useLlm: false }
+  triage: { useLlm: false },
+  shortcut: { refPattern: DEFAULT_SHORTCUT_REF, enrich: true, includeDescription: false }
 };
 
 class AppState {
@@ -308,7 +331,8 @@ class AppState {
             website: { ...DEFAULT_IMPORT_SETTINGS.website, ...p.website },
             resume: { ...DEFAULT_IMPORT_SETTINGS.resume, ...p.resume },
             neuroskill: { ...DEFAULT_IMPORT_SETTINGS.neuroskill, ...p.neuroskill },
-            triage: { ...DEFAULT_IMPORT_SETTINGS.triage, ...p.triage }
+            triage: { ...DEFAULT_IMPORT_SETTINGS.triage, ...p.triage },
+            shortcut: { ...DEFAULT_IMPORT_SETTINGS.shortcut, ...p.shortcut }
           };
         } catch {
           /* ignore a corrupt setting */
@@ -723,6 +747,31 @@ class AppState {
     });
   }
 
+  /** Backfill Shortcut enrichment over the already-staged inbox (shortcut spec
+   * §6): re-extracts ticket refs from each candidate (so pre-feature candidates
+   * are covered), fetches each distinct story once across the whole inbox, and
+   * rewrites enriched candidates in place. Annotation only — never promotes,
+   * rejects, or touches `triage_*`/title/date. Idempotent on re-run. */
+  async enrichInboxFromShortcut(): Promise<void> {
+    if (!this.store) return;
+    await this.guard(async () => {
+      const http = this.platform?.http;
+      const secrets = this.platform?.secrets;
+      if (!http || !secrets) throw new Error('This platform has no network/secret support');
+      const token = await secrets.get(SHORTCUT_TOKEN_NAME);
+      if (!token) throw new Error('No shortcut token saved — add one first');
+      const s = this.importSettings.shortcut;
+      const res = await this.store!.enrichCandidates(
+        (ids) => fetchShortcutStories(http, token, ids, { includeDescription: s.includeDescription }),
+        { refPattern: s.refPattern.trim() || undefined }
+      );
+      this.candidates = await this.store!.listCandidates();
+      this.message = `Shortcut: enriched ${res.enriched} of ${res.total} candidate${
+        res.total === 1 ? '' : 's'
+      } (${res.storiesFetched} stor${res.storiesFetched === 1 ? 'y' : 'ies'} fetched)`;
+    });
+  }
+
   /** Reject several candidates in one pass (see {@link promoteCandidates}).
    * Returns the count rejected. */
   async rejectCandidates(paths: string[]): Promise<number> {
@@ -757,7 +806,7 @@ class AppState {
 
   /** Store (or, when blank, clear) a provider token in the OS keyring via the
    * Secrets seam — never the record repo (plan §1). */
-  async setSourceToken(source: LiveSource, token: string): Promise<void> {
+  async setSourceToken(source: TokenSource, token: string): Promise<void> {
     await this.guard(async () => {
       if (!this.platform?.secrets) throw new Error('No secret storage available on this platform');
       const t = token.trim();
@@ -776,7 +825,7 @@ class AppState {
       return;
     }
     const out: Record<string, boolean> = {};
-    for (const source of Object.keys(TOKEN_NAMES) as LiveSource[]) {
+    for (const source of Object.keys(TOKEN_NAMES) as TokenSource[]) {
       const v = await secrets.get(TOKEN_NAMES[source]);
       out[source] = !!v && v.trim().length > 0;
     }
@@ -784,7 +833,7 @@ class AppState {
   }
 
   /** Cheap credential check against the provider (mirrors {@link testLlm}). */
-  async testSourceToken(source: LiveSource): Promise<void> {
+  async testSourceToken(source: TokenSource): Promise<void> {
     await this.guard(async () => {
       const http = this.platform?.http;
       const secrets = this.platform?.secrets;
@@ -793,6 +842,7 @@ class AppState {
       if (!token) throw new Error(`No ${source} token saved`);
       if (source === 'github') await validateGithub(http, token, this.importSettings.github.baseUrl || undefined);
       else if (source === 'asana') await validateAsana(http, token);
+      else if (source === 'shortcut') await validateShortcut(http, token);
       else await validateGmail(http, token);
       this.message = `${source} token looks valid`;
     });
@@ -873,7 +923,17 @@ class AppState {
   private runStage(
     source: LiveSource,
     fetcher: (http: Http, token: string) => Promise<RawItem[]>,
-    opts: { useLlmTriage: boolean; private?: boolean; project?: string }
+    opts: {
+      useLlmTriage: boolean;
+      private?: boolean;
+      project?: string;
+      /** Deterministic enrichment of the fresh items before triage/staging
+       * (shortcut spec §5). Runs only on `selectNewItems` output so no
+       * enrichment call is ever spent on an item that won't stage. May return a
+       * non-fatal note appended to the result toast; it must catch its own
+       * failures — enrichment must never abort an import. */
+      enrichFresh?: (http: Http, fresh: RawItem[]) => Promise<string | void>;
+    }
   ): Promise<IngestReport | null> {
     return this.guard(async () => {
       if (!this.store) throw new Error('Open a record folder first');
@@ -887,6 +947,7 @@ class AppState {
       // sees already-promoted/rejected content (spec §6). Pass the full `items`
       // to stageItems so its report still counts those skips.
       const fresh = await selectNewItems(this.store, items);
+      const note = opts.enrichFresh ? ((await opts.enrichFresh(http, fresh)) ?? '') : '';
       const signals = await this.triageFresh(fresh, opts.useLlmTriage);
       const report = await stageItems(this.store, items, {
         signals,
@@ -896,7 +957,7 @@ class AppState {
       this.lastImportReport = report;
       await this.loadCandidates();
       const known = report.skippedPromoted + report.skippedRejected;
-      this.message = `${source}: staged ${report.staged}, ${known} already known${report.errors.length ? `, ${report.errors.length} errors` : ''}`;
+      this.message = `${source}: staged ${report.staged}, ${known} already known${report.errors.length ? `, ${report.errors.length} errors` : ''}${note ? ` — ${note}` : ''}`;
       return report;
     });
   }
@@ -907,13 +968,42 @@ class AppState {
    * with one arg and behaves exactly as before. */
   importGithub(
     params: Omit<GithubFetchOpts, 'token'>,
-    over?: { useLlmTriage?: boolean; private?: boolean; project?: string }
+    over?: {
+      useLlmTriage?: boolean;
+      private?: boolean;
+      project?: string;
+      /** Per-feed Shortcut overrides (spec §7.2); absent ⇒ the global settings. */
+      shortcutEnrich?: boolean;
+      shortcutIncludeDescription?: boolean;
+    }
   ): Promise<IngestReport | null> {
-    return this.runStage('github', (http, token) => fetchGithub(http, { ...params, token }), {
-      useLlmTriage: over?.useLlmTriage ?? this.importSettings.triage.useLlm,
-      private: over?.private ?? this.importSettings.github.importPrivate,
-      project: over?.project
-    });
+    const shortcut = this.importSettings.shortcut;
+    // Ref extraction is always-on and token-free (spec §1); an explicit
+    // per-feed pattern in `params` wins over the global setting.
+    const shortcutRefPattern = params.shortcutRefPattern ?? (shortcut.refPattern.trim() || undefined);
+    return this.runStage(
+      'github',
+      (http, token) => fetchGithub(http, { ...params, shortcutRefPattern, token }),
+      {
+        useLlmTriage: over?.useLlmTriage ?? this.importSettings.triage.useLlm,
+        private: over?.private ?? this.importSettings.github.importPrivate,
+        project: over?.project,
+        enrichFresh: async (http, fresh) => {
+          // Gate the *fetch* on token + flag (spec §7.1); failure degrades to
+          // ref-tagged-but-un-enriched candidates, never an aborted import.
+          if (!(over?.shortcutEnrich ?? shortcut.enrich)) return;
+          const token = await this.platform?.secrets?.get(SHORTCUT_TOKEN_NAME);
+          if (!token) return;
+          try {
+            await enrichRawItemsWithShortcut(http, token, fresh, {
+              includeDescription: over?.shortcutIncludeDescription ?? shortcut.includeDescription
+            });
+          } catch (e) {
+            return `Shortcut enrichment skipped: ${String(e)}`;
+          }
+        }
+      }
+    );
   }
   importAsana(
     params: Omit<AsanaFetchOpts, 'token'>,
@@ -1398,13 +1488,23 @@ class AppState {
    * + forced picker flags) lives in {@link buildFeed}. */
   saveCurrentAsFeed(kind: FeedKind, label: string): Feed {
     const live = kind === 'github' || kind === 'asana' || kind === 'gmail' || kind === 'website';
+    // A github feed snapshots the Shortcut settings too (spec §7.2): the feed
+    // carries a project, so this yields per-project pattern config for free.
+    const shortcut =
+      kind === 'github'
+        ? {
+            shortcutRefPattern: this.importSettings.shortcut.refPattern,
+            shortcutEnrich: this.importSettings.shortcut.enrich,
+            shortcutIncludeDescription: this.importSettings.shortcut.includeDescription
+          }
+        : undefined;
     const feed = buildFeed({
       id: crypto.randomUUID(),
       label,
       kind,
       project: this.importProject,
       liveParams: live
-        ? ($state.snapshot(this.importSettings[kind]) as Record<string, unknown>)
+        ? { ...($state.snapshot(this.importSettings[kind]) as Record<string, unknown>), ...shortcut }
         : undefined,
       roots: kind === 'claude-code' ? $state.snapshot(this.claudeCodeSelected) : undefined,
       dirs: kind === 'warp' ? $state.snapshot(this.warpSelected) : undefined,
@@ -1439,7 +1539,15 @@ class AppState {
     } else {
       const params = effectiveLiveParams(feed);
       const over = { useLlmTriage: feed.useLlm, private: feed.private, project: feed.project };
-      if (feed.kind === 'github') report = await this.importGithub(this.toGithubParams(params), over);
+      if (feed.kind === 'github')
+        report = await this.importGithub(this.toGithubParams(params), {
+          ...over,
+          // Older feeds carry no shortcut keys — undefined falls back to the
+          // global settings inside importGithub.
+          shortcutEnrich: params.shortcutEnrich === undefined ? undefined : !!params.shortcutEnrich,
+          shortcutIncludeDescription:
+            params.shortcutIncludeDescription === undefined ? undefined : !!params.shortcutIncludeDescription
+        });
       else if (feed.kind === 'asana') report = await this.importAsana(this.toAsanaParams(params), over);
       else if (feed.kind === 'gmail') report = await this.importGmail(this.toGmailParams(params), over);
       else if (feed.kind === 'website')
@@ -1472,7 +1580,10 @@ class AppState {
       discussionCharCap: cap && Number.isFinite(cap) && cap > 0 ? cap : undefined,
       mode: (p.mode as 'items' | 'commits') ?? 'items',
       branch: String(p.branch ?? '').trim() || undefined,
-      excludeMerges: p.excludeMerges === undefined ? true : !!p.excludeMerges
+      excludeMerges: p.excludeMerges === undefined ? true : !!p.excludeMerges,
+      // The feed's snapshotted ticket-ref pattern (spec §7.2); absent on older
+      // feeds ⇒ undefined ⇒ importGithub falls back to the global setting.
+      shortcutRefPattern: String(p.shortcutRefPattern ?? '').trim() || undefined
     };
   }
 

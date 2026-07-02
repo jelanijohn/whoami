@@ -69,6 +69,10 @@ export interface IngestReport {
 export const GITHUB_TOKEN_NAME = 'github.token';
 export const ASANA_TOKEN_NAME = 'asana.token';
 export const GMAIL_TOKEN_NAME = 'gmail.access_token';
+/** A Shortcut token grants COMPLETE account access — OS keyring only, exactly
+ * like the others. Used by the Shortcut enrichment of GitHub items (Shortcut is
+ * not an {@link IngestSource}; enriched candidates keep `source: 'github'`). */
+export const SHORTCUT_TOKEN_NAME = 'shortcut.token';
 
 /** Pull a string out of an unknown JSON shape, or undefined. */
 export function asStr(v: unknown): string | undefined {
