@@ -13,10 +13,13 @@
     compact = false,
     project,
     date,
+    parent = '',
+    parentHint = '',
     onselect,
     ontoggle,
     onprojectchange,
     ondatechange,
+    onparentclear,
     onpromote,
     onreject
   }: {
@@ -33,11 +36,17 @@
     /** Current per-item date override (page-owned, '' when unset). Only meaningful
      * for needs-date candidates (allow-undated spec §E). */
     date: string;
+    /** Prefilled parent entry ULID (page-owned; story-import spec §7 parent
+     * assist), '' when none. Promote carries it; the × strip clears it. */
+    parent?: string;
+    /** Human label for the parent prefill ("sc-57886"); '' hides the strip. */
+    parentHint?: string;
     onselect: (path: string, checked: boolean) => void;
     ontoggle: () => void;
     onprojectchange: (path: string, slug: string) => void;
     ondatechange: (path: string, date: string) => void;
-    onpromote: (path: string, project: string, date: string) => void;
+    onparentclear?: (path: string) => void;
+    onpromote: (path: string, project: string, date: string, parent: string) => void;
     onreject: (path: string, title: string) => void;
   } = $props();
 
@@ -169,7 +178,7 @@
     title={canPromote ? 'Promote' : 'Set a date first'}
     aria-label="Promote “{title}”"
     disabled={busy || !canPromote}
-    onclick={stop(() => onpromote(path, project, promoteDate))}
+    onclick={stop(() => onpromote(path, project, promoteDate, parent))}
     class="grid size-7 shrink-0 place-items-center rounded-[7px] disabled:opacity-50"
     style="background:rgba(31,158,111,0.1);color:{KEPT_COLOR}"
   >
@@ -222,6 +231,23 @@
           >
         {/each}
       </div>
+    {/if}
+
+    <!-- Parent assist (story-import spec §7): a visible, clearable SUGGESTION —
+         promote files under the matched story entry unless the human clears it. -->
+    {#if parent && parentHint}
+      <p class="mt-2 mb-0 flex items-center gap-1.5 text-[11.5px] text-[var(--color-muted)]">
+        <span class="shrink-0"><Icon name="info" size={15} /></span>
+        <span>Matched Shortcut story {parentHint} — promoting files this under its entry.</span>
+        <button
+          type="button"
+          title="Clear the suggested parent"
+          onclick={() => onparentclear?.(path)}
+          class="rounded px-1 text-[var(--color-private)] hover:underline"
+        >
+          clear
+        </button>
+      </p>
     {/if}
 
     <div
@@ -291,7 +317,7 @@
           type="button"
           title={canPromote ? 'Promote' : 'Set a date first'}
           disabled={busy || !canPromote}
-          onclick={() => onpromote(path, project, promoteDate)}
+          onclick={() => onpromote(path, project, promoteDate, parent)}
           class="h-[30px] rounded-lg bg-[var(--color-accent)] px-3 text-[12px] font-semibold text-white hover:opacity-90 disabled:opacity-50"
         >
           Promote

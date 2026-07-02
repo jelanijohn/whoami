@@ -1292,6 +1292,41 @@ describe('staging pipeline', () => {
     expect(r.errors).toHaveLength(1);
   });
 
+  it('stages a shortcut story candidate round-trip (story-import spec T11)', async () => {
+    const story: RawItem = {
+      source: 'shortcut',
+      sourceId: '57886',
+      title: 'Promo banner disclaimer',
+      date: '2026-05-20',
+      url: 'https://app.shortcut.com/acme/story/57886',
+      body: '--- Description ---\nAdd the legal disclaimer under the promo banner.',
+      suggestedType: 'journal',
+      suggestedTags: ['shortcut', 'feature'],
+      extraFrontmatter: { shortcut: { id: '57886', type: 'feature', roles: ['owner', 'follower'] } }
+    };
+    const r1 = await stageItems(store, [story]);
+    expect(r1).toMatchObject({ fetched: 1, staged: 1 });
+    const [cand] = await store.listCandidates();
+    // Provenance keys, protective privacy default, and the shared shortcut
+    // frontmatter (the Stage-2 join key) all survive the text round-trip.
+    expect(cand.frontmatter.source).toBe('shortcut');
+    expect(cand.frontmatter.source_id).toBe('57886');
+    expect(cand.frontmatter.private).toBe(true);
+    expect(cand.frontmatter.shortcut).toEqual({
+      id: '57886',
+      type: 'feature',
+      roles: ['owner', 'follower']
+    });
+    // No shortcut_ids — a story item must never trigger self-enrichment (§4.6).
+    expect(cand.frontmatter.shortcut_ids).toBeUndefined();
+
+    // Promote, then re-run: idempotence via selectNewItems — 0 staged.
+    await store.promoteCandidate(cand.path!, { project: '' });
+    const r2 = await stageItems(store, [story]);
+    expect(r2).toMatchObject({ staged: 0, skippedPromoted: 1 });
+    expect(await store.listCandidates()).toHaveLength(0);
+  });
+
   it('full rebuild repopulates provenance from text', async () => {
     await stageItems(store, [item(1)]);
     const cand = (await store.listCandidates())[0];

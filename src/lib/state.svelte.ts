@@ -60,7 +60,9 @@ import {
   DEFAULT_SHORTCUT_REF,
   enrichRawItemsWithShortcut,
   fetchShortcutStories,
+  fetchShortcutStoryItems,
   validateShortcut,
+  type ShortcutWindow,
   type AsanaFetchOpts,
   type AsanaProject,
   type Database,
@@ -110,13 +112,15 @@ export type JournalView = 'grouped' | 'timeline' | 'calendar' | 'table';
 /** How the Grouped view buckets entries. */
 export type JournalGroupBy = 'project' | 'type' | 'month';
 
-/** Live (API) ingest sources. LinkedIn is import-only (archive), handled apart. */
-export type LiveSource = 'github' | 'asana' | 'gmail';
+/** Live (API) ingest sources. LinkedIn is import-only (archive), handled apart.
+ * Shortcut is both a source (the story import) and an enrichment of GitHub
+ * items — one keyring token serves both (story-import spec §3). */
+export type LiveSource = 'github' | 'asana' | 'shortcut' | 'gmail';
 
-/** Everything with a keyring token: the live sources plus Shortcut, which is an
- * *enrichment* of GitHub items, not an ingest source (shortcut spec §11 note) —
- * it shares the connection-settings surface but never stages items itself. */
-export type TokenSource = LiveSource | 'shortcut';
+/** Everything with a keyring token. Now identical to {@link LiveSource} (the
+ * alias survives for the connection-settings surface, which predates Shortcut
+ * becoming a source of its own). */
+export type TokenSource = LiveSource;
 
 /** Keyring entry name per token holder — the token never leaves the keyring. */
 const TOKEN_NAMES: Record<TokenSource, string> = {
@@ -178,16 +182,21 @@ export interface ImportSettings {
   /** Triage settings (spec §6): the per-import LLM flag (off by default) plus
    * optional rubric overrides. Persisted here (localStorage), never the record. */
   triage: { useLlm: boolean; rubric?: Partial<TriageRubric> };
-  /** Shortcut enrichment of GitHub imports (shortcut spec §7.1). The token is
-   * NOT here — it lives in the keyring like the others. */
+  /** Shortcut: the GitHub-enrichment knobs (shortcut spec §7.1) plus the story
+   * import's own `updated_at` window (story-import spec §3). The token is NOT
+   * here — it lives in the keyring like the others. */
   shortcut: {
     /** Owner-editable ticket-ref pattern (regex source), default `sc-\d+` (D5). */
     refPattern: string;
     /** Run Shortcut enrichment during GitHub import when a token is present. */
     enrich: boolean;
     /** Pull the story description verbatim (bounded). Default FALSE (D2) —
-     * client-ticket prose stays out unless deliberately opted into. */
+     * client-ticket prose stays out unless deliberately opted into. Applies to
+     * enrichment only; the story import always carries its description. */
     includeDescription: boolean;
+    /** Story-import window bounds, YYYY-MM-DD ('' ⇒ open). */
+    since: string;
+    until: string;
   };
 }
 
@@ -213,7 +222,7 @@ export const DEFAULT_IMPORT_SETTINGS: ImportSettings = {
   resume: { allowUndated: false },
   neuroskill: { dataDir: '' },
   triage: { useLlm: false },
-  shortcut: { refPattern: DEFAULT_SHORTCUT_REF, enrich: true, includeDescription: false }
+  shortcut: { refPattern: DEFAULT_SHORTCUT_REF, enrich: true, includeDescription: false, since: '', until: '' }
 };
 
 class AppState {
@@ -619,16 +628,30 @@ class AppState {
   }
 
   /** Promote a candidate into the record, assigning the picked project (plan
-   * §2.4). An empty `project` clears any suggested affiliation. */
-  async promoteCandidate(candidatePath: string, project = '', date?: string): Promise<Entry | null> {
+   * §2.4). An empty `project` clears any suggested affiliation. `parent` is the
+   * accepted parent-assist suggestion (story-import spec §7), if any. */
+  async promoteCandidate(
+    candidatePath: string,
+    project = '',
+    date?: string,
+    parent?: string
+  ): Promise<Entry | null> {
     if (!this.store) return null;
     return this.guard(async () => {
-      const e = await this.store!.promoteCandidate(candidatePath, { project, date });
+      const e = await this.store!.promoteCandidate(candidatePath, { project, date, parent });
       this.candidates = await this.store!.listCandidates();
       await this.refresh();
       this.message = `Promoted “${e.frontmatter.title}”`;
       return e;
     });
+  }
+
+  /** Parent-assist lookup (story-import spec §7): the promoted Shortcut story
+   * entry matching a github candidate's `shortcut.id`, or null. Index-only and
+   * quiet — no guard/toast; failure means no prefill, never an error. */
+  async suggestShortcutParent(candidate: Entry): Promise<string | null> {
+    if (!this.store) return null;
+    return this.store.suggestShortcutParent(candidate);
   }
 
   /** Authoritative check for an existing `type: project` entry with this slug,
@@ -678,15 +701,17 @@ class AppState {
   /** Promote several candidates in one pass, reloading + refreshing once at the
    * end rather than per item. A single item failing doesn't abort the rest;
    * the toast reports how many succeeded. Returns the count promoted. */
-  async promoteCandidates(items: { path: string; project?: string; date?: string }[]): Promise<number> {
+  async promoteCandidates(
+    items: { path: string; project?: string; date?: string; parent?: string }[]
+  ): Promise<number> {
     if (!this.store || items.length === 0) return 0;
     return (
       (await this.guard(async () => {
         let ok = 0;
         let failed = 0;
-        for (const { path, project = '', date } of items) {
+        for (const { path, project = '', date, parent } of items) {
           try {
-            await this.store!.promoteCandidate(path, { project, date });
+            await this.store!.promoteCandidate(path, { project, date, parent });
             ok++;
           } catch {
             failed++;
@@ -1014,6 +1039,31 @@ class AppState {
       private: over?.private,
       project: over?.project
     });
+  }
+  /** The Shortcut story import (story-import spec §3): windowed, follower-scoped
+   * acquisition through {@link fetchShortcutStoryItems}. Always stages private —
+   * there is no per-source public opt-in for Shortcut (spec §0). Adapter-level
+   * notes (window truncation, skipped stories) are folded into the run's report
+   * so they are never silently dropped (spec §4.3). */
+  async importShortcut(
+    params: ShortcutWindow,
+    over?: { useLlmTriage?: boolean; project?: string }
+  ): Promise<IngestReport | null> {
+    const errors: string[] = [];
+    const report = await this.runStage(
+      'shortcut',
+      (http, token) => fetchShortcutStoryItems(http, token, params, { errors }),
+      {
+        useLlmTriage: over?.useLlmTriage ?? this.importSettings.triage.useLlm,
+        private: true,
+        project: over?.project
+      }
+    );
+    if (report && errors.length) {
+      report.errors.push(...errors);
+      this.message += ` — ${errors.length} note${errors.length === 1 ? '' : 's'} (see report)`;
+    }
+    return report;
   }
   importGmail(
     params: Omit<GmailFetchOpts, 'token'>,
@@ -1487,7 +1537,8 @@ class AppState {
    * (spec §4.2.4), add it, and return it. The pure shaping (per-kind param shape
    * + forced picker flags) lives in {@link buildFeed}. */
   saveCurrentAsFeed(kind: FeedKind, label: string): Feed {
-    const live = kind === 'github' || kind === 'asana' || kind === 'gmail' || kind === 'website';
+    const live =
+      kind === 'github' || kind === 'asana' || kind === 'gmail' || kind === 'website';
     // A github feed snapshots the Shortcut settings too (spec §7.2): the feed
     // carries a project, so this yields per-project pattern config for free.
     const shortcut =
@@ -1503,9 +1554,14 @@ class AppState {
       label,
       kind,
       project: this.importProject,
-      liveParams: live
-        ? { ...($state.snapshot(this.importSettings[kind]) as Record<string, unknown>), ...shortcut }
-        : undefined,
+      // A shortcut feed carries only the story-import window — the enrichment
+      // knobs sharing `importSettings.shortcut` belong to github feeds (§7.2).
+      liveParams:
+        kind === 'shortcut'
+          ? { since: this.importSettings.shortcut.since, until: this.importSettings.shortcut.until }
+          : live
+            ? { ...($state.snapshot(this.importSettings[kind]) as Record<string, unknown>), ...shortcut }
+            : undefined,
       roots: kind === 'claude-code' ? $state.snapshot(this.claudeCodeSelected) : undefined,
       dirs: kind === 'warp' ? $state.snapshot(this.warpSelected) : undefined,
       dataDir: kind === 'neuroskill' ? this.importSettings.neuroskill.dataDir : undefined,
@@ -1549,6 +1605,12 @@ class AppState {
             params.shortcutIncludeDescription === undefined ? undefined : !!params.shortcutIncludeDescription
         });
       else if (feed.kind === 'asana') report = await this.importAsana(this.toAsanaParams(params), over);
+      else if (feed.kind === 'shortcut')
+        // Shortcut always stages private (spec §0) — only useLlm/project carry over.
+        report = await this.importShortcut(this.toShortcutParams(params), {
+          useLlmTriage: feed.useLlm,
+          project: feed.project
+        });
       else if (feed.kind === 'gmail') report = await this.importGmail(this.toGmailParams(params), over);
       else if (feed.kind === 'website')
         // Website always stages private (spec §0.3); the feed's `private` flag is
@@ -1595,6 +1657,13 @@ class AppState {
       until: (p.until as string) || undefined,
       includeCompleted: (p.includeCompleted as boolean) ?? true,
       limit: (p.limit as number) || undefined
+    };
+  }
+
+  private toShortcutParams(p: Record<string, unknown>): ShortcutWindow {
+    return {
+      since: (p.since as string) || undefined,
+      until: (p.until as string) || undefined
     };
   }
 

@@ -43,16 +43,28 @@ export {
 } from './asana';
 export {
   DEFAULT_SHORTCUT_REF,
+  IMPORT_DESCRIPTION_CAP,
   extractShortcutRefs,
   mapShortcutStory,
   fetchShortcutResolutionMaps,
   fetchShortcutStories,
+  storyFrontmatter,
   shortcutEnrichment,
   stripShortcutBlock,
   enrichRawItemsWithShortcut,
   validateShortcut,
+  fetchShortcutMe,
+  storyInvolvesMe,
+  storyRoles,
+  bisectWindow,
+  queryShortcutStories,
+  mapShortcutStoryToRawItem,
+  fetchShortcutStoryItems,
   type ShortcutStory,
-  type ShortcutResolve
+  type ShortcutResolve,
+  type ShortcutMe,
+  type ShortcutRole,
+  type ShortcutWindow
 } from './shortcut';
 export {
   internalDateToIso,

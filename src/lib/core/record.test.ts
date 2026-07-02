@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -867,5 +867,77 @@ describe('enrichCandidates backfills Shortcut facts into the inbox (shortcut spe
     expect(calls).toEqual([['33']]);
     const [c] = await store.listCandidates();
     expect(c.frontmatter.shortcut_ids).toEqual(['33']);
+  });
+});
+
+describe('promote-time parent assist (story-import spec §7, T12)', () => {
+  const githubCandidate = (shortcutId?: string) =>
+    makeEntry({
+      type: 'journal',
+      title: 'sc-57886 promo banner',
+      date: '2026-06-10',
+      private: true,
+      extra: {
+        source: 'github',
+        source_id: 'sha1',
+        reviewed: false,
+        ...(shortcutId ? { shortcut: { id: shortcutId, type: 'feature' } } : {})
+      }
+    });
+
+  /** Promote a story entry so (shortcut, id) lands in the provenance index. */
+  async function promoteStory(id: string) {
+    const staged = await store.stageCandidate(
+      makeEntry({
+        type: 'journal',
+        title: 'Promo banner disclaimer',
+        date: '2026-05-20',
+        private: true,
+        extra: { source: 'shortcut', source_id: id, reviewed: false, shortcut: { id } }
+      })
+    );
+    return store.promoteCandidate(staged.path!);
+  }
+
+  it('a matching promoted story yields its ULID as the prefill', async () => {
+    const story = await promoteStory('57886');
+    const suggested = await store.suggestShortcutParent(githubCandidate('57886'));
+    expect(suggested).toBe(story.frontmatter.id);
+  });
+
+  it('absent match, missing shortcut id, or a non-github source ⇒ no prefill', async () => {
+    expect(await store.suggestShortcutParent(githubCandidate('99999'))).toBeNull();
+    expect(await store.suggestShortcutParent(githubCandidate())).toBeNull();
+    // A story candidate never parent-assists to itself (source gate).
+    await promoteStory('57886');
+    const storyCandidate = makeEntry({
+      type: 'journal',
+      title: 'Another story',
+      date: '2026-05-21',
+      extra: { source: 'shortcut', source_id: '600', shortcut: { id: '57886' } }
+    });
+    expect(await store.suggestShortcutParent(storyCandidate)).toBeNull();
+  });
+
+  it('an index failure degrades to no prefill, never a throw', async () => {
+    vi.spyOn(store, 'findBySource').mockRejectedValueOnce(new Error('index unavailable'));
+    expect(await store.suggestShortcutParent(githubCandidate('57886'))).toBeNull();
+  });
+
+  it('promote applies the parent override; clearing removes it', async () => {
+    const staged = await store.stageCandidate(githubCandidate('57886'));
+    const promoted = await store.promoteCandidate(staged.path!, { parent: '01ARZ3NDEKTSV4RRFFQ69G5FAV' });
+    expect(promoted.frontmatter.parent).toBe('01ARZ3NDEKTSV4RRFFQ69G5FAV');
+
+    const staged2 = await store.stageCandidate(
+      makeEntry({
+        type: 'journal',
+        title: 'second',
+        date: '2026-06-11',
+        extra: { source: 'github', source_id: 'sha2', parent: 'stale-suggestion' }
+      })
+    );
+    const promoted2 = await store.promoteCandidate(staged2.path!, { parent: '' });
+    expect(promoted2.frontmatter.parent).toBeUndefined();
   });
 });

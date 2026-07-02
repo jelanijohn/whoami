@@ -130,6 +130,39 @@
     itemDates = { ...itemDates, [path]: date };
   }
 
+  // --- Parent assist (story-import spec §7) ----------------------------------
+  // When an expanded github candidate carries a Shortcut story id that matches
+  // a promoted story entry, its ULID is PREFILLED as the promote parent —
+  // visibly labeled, clearable, never auto-applied without the human promote.
+  let itemParents = $state<Record<string, string>>({});
+  // Human label for the prefill ("sc-57886"); present only while a suggestion
+  // stands, so clearing it hides the strip.
+  let parentHints = $state<Record<string, string>>({});
+  const parentLookedUp = new Set<string>();
+  function getParent(c: Entry): string {
+    const path = c.path ?? '';
+    return path in itemParents ? itemParents[path] : '';
+  }
+  function clearItemParent(path: string) {
+    itemParents = { ...itemParents, [path]: '' };
+    parentHints = { ...parentHints, [path]: '' };
+  }
+  async function loadParentSuggestion(path: string) {
+    if (parentLookedUp.has(path)) return;
+    parentLookedUp.add(path);
+    const c = byPath.get(path);
+    if (!c) return;
+    const ulid = await app.suggestShortcutParent(c);
+    if (!ulid) return;
+    const sc = c.frontmatter.shortcut;
+    const scId =
+      sc && typeof sc === 'object' && !Array.isArray(sc)
+        ? String((sc as Record<string, unknown>).id ?? '')
+        : '';
+    itemParents = { ...itemParents, [path]: ulid };
+    parentHints = { ...parentHints, [path]: `sc-${scId}` };
+  }
+
   // --- Group expansion -------------------------------------------------------
   // Seed the first ~6 groups open on first paint and whenever the grouping key
   // changes (re-grouping invalidates the old keys entirely).
@@ -151,7 +184,12 @@
     expandedGroups.has(key) ? expandedGroups.delete(key) : expandedGroups.add(key);
   }
   function toggleItem(path: string) {
-    expandedItems.has(path) ? expandedItems.delete(path) : expandedItems.add(path);
+    if (expandedItems.has(path)) {
+      expandedItems.delete(path);
+    } else {
+      expandedItems.add(path);
+      void loadParentSuggestion(path);
+    }
   }
   function expandAll() {
     for (const g of groups) expandedGroups.add(g.key);
@@ -196,7 +234,7 @@
   // The project-resolution flow below is carried over unchanged from the prior
   // inbox: promoting an item whose slug isn't a project yet walks the distinct
   // missing slugs one at a time (create / file-under / promote-anyway).
-  type PromoteItem = { path: string; project: string; date?: string };
+  type PromoteItem = { path: string; project: string; date?: string; parent?: string };
   let promoteItems = $state<PromoteItem[] | null>(null);
   let unresolved = $state<string[]>([]);
   let resolveTotal = $state(0);
@@ -247,7 +285,8 @@
     const items = promoteItems!.map((i) => ({
       path: i.path,
       project: resolutions.get(i.project.trim()) ?? i.project,
-      date: i.date
+      date: i.date,
+      parent: i.parent
     }));
     reset();
     clearSelection();
@@ -284,8 +323,8 @@
     node.select();
   }
 
-  async function promote(path: string, project: string, date?: string) {
-    await beginPromote([{ path, project: project.trim(), date }]);
+  async function promote(path: string, project: string, date?: string, parent?: string) {
+    await beginPromote([{ path, project: project.trim(), date, parent: parent || undefined }]);
   }
   async function reject(path: string, title: string) {
     if (confirm(`Reject “${title}”? It won't be proposed again.`)) {
@@ -300,7 +339,8 @@
       .map((c) => ({
         path: c.path!,
         project: bulkProject === KEEP ? getProject(c) : bulkProject === '' ? '' : bulkProject,
-        date: getDate(c) || undefined
+        date: getDate(c) || undefined,
+        parent: getParent(c) || undefined
       }));
     if (items.length === 0) return;
     clearSelection();
@@ -648,11 +688,14 @@
                       expanded={expandedItems.has(c.path ?? '')}
                       project={getProject(c)}
                       date={getDate(c)}
+                      parent={getParent(c)}
+                      parentHint={parentHints[c.path ?? ''] ?? ''}
                       onselect={toggleSelect}
                       ontoggle={() => toggleItem(c.path ?? '')}
                       onprojectchange={setItemProject}
                       ondatechange={setItemDate}
-                      onpromote={(p, proj, d) => void promote(p, proj, d)}
+                      onparentclear={clearItemParent}
+                      onpromote={(p, proj, d, par) => void promote(p, proj, d, par)}
                       onreject={(p, t) => void reject(p, t)}
                     />
                   </div>

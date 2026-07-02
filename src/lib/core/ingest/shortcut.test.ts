@@ -2,12 +2,21 @@ import { describe, expect, it } from 'vitest';
 import type { Http, HttpRequest } from '../types';
 import {
   DEFAULT_SHORTCUT_REF,
+  IMPORT_DESCRIPTION_CAP,
   extractShortcutRefs,
   mapShortcutStory,
   fetchShortcutStories,
+  storyFrontmatter,
   shortcutEnrichment,
   stripShortcutBlock,
   enrichRawItemsWithShortcut,
+  fetchShortcutMe,
+  storyInvolvesMe,
+  storyRoles,
+  bisectWindow,
+  queryShortcutStories,
+  mapShortcutStoryToRawItem,
+  fetchShortcutStoryItems,
   type ShortcutResolve
 } from './shortcut';
 import { mapGithubCommitNode, mapGithubGraphqlNode } from './github';
@@ -344,5 +353,285 @@ describe('enrichRawItemsWithShortcut', () => {
     expect(items[0].extraFrontmatter?.shortcut).toBeUndefined();
     expect(items[0].extraFrontmatter?.shortcut_ids).toEqual(['57886']);
     expect(items[0].body).not.toContain('--- Shortcut ---');
+  });
+});
+
+// --- Story import (shortcut-story-import spec §10, T1–T9) ---------------------
+
+const ME = 'uuid-me';
+
+/** A followed story payload as Query Stories returns it (StorySlim shape). */
+const FOLLOWED_STORY = {
+  ...RAW_STORY,
+  follower_ids: ['uuid-other', ME],
+  owner_ids: [ME],
+  requested_by_id: ME
+};
+
+// T1
+describe('storyInvolvesMe', () => {
+  it('true when my uuid is in follower_ids', () => {
+    expect(storyInvolvesMe(FOLLOWED_STORY, ME)).toBe(true);
+  });
+
+  it('false when absent, missing, or malformed (fail closed)', () => {
+    expect(storyInvolvesMe({ ...RAW_STORY, follower_ids: ['uuid-other'] }, ME)).toBe(false);
+    expect(storyInvolvesMe(RAW_STORY, ME)).toBe(false); // no follower_ids at all
+    expect(storyInvolvesMe({ follower_ids: 'not-an-array' }, ME)).toBe(false);
+    expect(storyInvolvesMe(null, ME)).toBe(false);
+    expect(storyInvolvesMe({ follower_ids: [42] }, ME)).toBe(false); // non-string ids
+  });
+});
+
+// T2
+describe('storyRoles', () => {
+  it('owner+requester+follower for a self-created self-owned story, in fixed order', () => {
+    expect(storyRoles(FOLLOWED_STORY, ME)).toEqual(['owner', 'requester', 'follower']);
+  });
+
+  it("['follower'] for a merely-followed story", () => {
+    const watched = { ...RAW_STORY, follower_ids: [ME], owner_ids: ['uuid-other'], requested_by_id: 'uuid-other' };
+    expect(storyRoles(watched, ME)).toEqual(['follower']);
+  });
+
+  it('requester without ownership keeps the fixed order', () => {
+    const requested = { ...RAW_STORY, follower_ids: [ME], owner_ids: [], requested_by_id: ME };
+    expect(storyRoles(requested, ME)).toEqual(['requester', 'follower']);
+  });
+});
+
+// T3
+describe('bisectWindow', () => {
+  it('splits a 10-day window into adjacent non-overlapping halves', () => {
+    const [a, b] = bisectWindow('2026-01-01', '2026-01-10');
+    expect(a).toEqual({ since: '2026-01-01', until: '2026-01-05' });
+    expect(b).toEqual({ since: '2026-01-06', until: '2026-01-10' });
+  });
+
+  it('splits a 2-day window into two single days', () => {
+    const [a, b] = bisectWindow('2026-01-01', '2026-01-02');
+    expect(a).toEqual({ since: '2026-01-01', until: '2026-01-01' });
+    expect(b).toEqual({ since: '2026-01-02', until: '2026-01-02' });
+  });
+
+  it('a 1-day window yields a left half identical to the input (the depth stop)', () => {
+    const [a, b] = bisectWindow('2026-01-01', '2026-01-01');
+    expect(a).toEqual({ since: '2026-01-01', until: '2026-01-01' });
+    // The right half is inverted (since > until) and matches nothing.
+    expect(b).toEqual({ since: '2026-01-02', until: '2026-01-01' });
+  });
+});
+
+/** Fake Http for the story-import endpoints; `search` decides each
+ * POST /stories/search response from its parsed body. */
+function fakeImportHttp(
+  requests: HttpRequest[],
+  opts: {
+    member?: unknown;
+    search?: (body: Record<string, unknown>) => unknown[];
+  } = {}
+): Http {
+  return {
+    async request(req) {
+      requests.push(req);
+      const respond = (json: unknown) => ({
+        status: 200,
+        ok: true,
+        headers: {},
+        text: JSON.stringify(json)
+      });
+      if (req.url.endsWith('/member')) {
+        return respond(opts.member ?? { id: ME, mention_name: 'jelan', name: 'Jelani' });
+      }
+      if (req.url.endsWith('/stories/search')) {
+        const body = JSON.parse(req.body ?? '{}') as Record<string, unknown>;
+        return respond(opts.search ? opts.search(body) : []);
+      }
+      if (req.url.endsWith('/workflows')) return respond([{ states: [{ id: 500, name: 'Done' }] }]);
+      if (/\/(epics|groups)$/.test(req.url)) return respond([]);
+      return { status: 404, ok: false, headers: {}, text: 'not found' };
+    }
+  };
+}
+
+// T8
+describe('fetchShortcutMe', () => {
+  it('maps id/mention_name/name', async () => {
+    const http = fakeImportHttp([]);
+    expect(await fetchShortcutMe(http, 'tok')).toEqual({ id: ME, mentionName: 'jelan', name: 'Jelani' });
+  });
+
+  it('a missing id throws — the import cannot proceed without an identity', async () => {
+    const http = fakeImportHttp([], { member: { mention_name: 'jelan' } });
+    await expect(fetchShortcutMe(http, 'tok')).rejects.toThrow(/no member id/);
+  });
+});
+
+// T4
+describe('queryShortcutStories', () => {
+  it('POSTs includes_description + ISO date-time bounds and NO archived key', async () => {
+    const requests: HttpRequest[] = [];
+    const http = fakeImportHttp(requests, { search: () => [FOLLOWED_STORY] });
+    const out = await queryShortcutStories(http, 'tok', { since: '2026-01-01', until: '2026-06-30' });
+    expect(out).toHaveLength(1);
+    expect(requests).toHaveLength(1);
+    expect(requests[0].method).toBe('POST');
+    expect(requests[0].headers?.['Shortcut-Token']).toBe('tok');
+    const body = JSON.parse(requests[0].body ?? '{}');
+    expect(body).toEqual({
+      includes_description: true,
+      updated_at_start: '2026-01-01T00:00:00Z',
+      updated_at_end: '2026-06-30T23:59:59Z'
+    });
+    expect('archived' in body).toBe(false);
+  });
+
+  it('omits absent bounds from the body', async () => {
+    const requests: HttpRequest[] = [];
+    const http = fakeImportHttp(requests, { search: () => [] });
+    await queryShortcutStories(http, 'tok', {});
+    expect(JSON.parse(requests[0].body ?? '{}')).toEqual({ includes_description: true });
+  });
+
+  it('a cap-length response triggers exactly one bisection level', async () => {
+    const requests: HttpRequest[] = [];
+    const capped = Array.from({ length: 1000 }, (_, i) => ({ id: i }));
+    const http = fakeImportHttp(requests, {
+      search: (body) =>
+        // Only the full window is truncated; each half comes back small.
+        body.updated_at_start === '2026-01-01T00:00:00Z' && body.updated_at_end === '2026-01-10T23:59:59Z'
+          ? capped
+          : [FOLLOWED_STORY]
+    });
+    const out = await queryShortcutStories(http, 'tok', { since: '2026-01-01', until: '2026-01-10' });
+    // 1 truncated call + 2 half-window calls, results concatenated.
+    expect(requests).toHaveLength(3);
+    expect(out).toHaveLength(2);
+    const bodies = requests.map((r) => JSON.parse(r.body ?? '{}'));
+    expect(bodies[1].updated_at_end).toBe('2026-01-05T23:59:59Z');
+    expect(bodies[2].updated_at_start).toBe('2026-01-06T00:00:00Z');
+  });
+
+  it('an unsplittable truncated window reports the truncation, never drops', async () => {
+    const capped = Array.from({ length: 1000 }, (_, i) => ({ id: i }));
+    const errors: string[] = [];
+    const http = fakeImportHttp([], { search: () => capped });
+    const out = await queryShortcutStories(
+      http,
+      'tok',
+      { since: '2026-01-01', until: '2026-01-01' },
+      { errors }
+    );
+    expect(out).toHaveLength(1000);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain('cannot be split further');
+  });
+
+  it('a truncated open-ended window throws with a set-an-explicit-window hint', async () => {
+    const capped = Array.from({ length: 1000 }, (_, i) => ({ id: i }));
+    const http = fakeImportHttp([], { search: () => capped });
+    await expect(queryShortcutStories(http, 'tok', { since: '2026-01-01' })).rejects.toThrow(
+      /explicit since and until/
+    );
+  });
+});
+
+// T5
+describe('mapShortcutStoryToRawItem', () => {
+  const story = mapShortcutStory(FOLLOWED_STORY, RESOLVE, {
+    includeDescription: true,
+    cap: IMPORT_DESCRIPTION_CAP
+  });
+
+  it('maps a full story to a shortcut-sourced RawItem', () => {
+    const item = mapShortcutStoryToRawItem(story, ['owner', 'requester', 'follower']);
+    expect(item.source).toBe('shortcut');
+    expect(item.sourceId).toBe('57886');
+    expect(item.title).toBe('Promo banner disclaimer');
+    expect(item.date).toBe('2026-05-20'); // completed_at wins
+    expect(item.url).toBe('https://app.shortcut.com/acme/story/57886');
+    expect(item.suggestedType).toBe('journal');
+    expect(item.suggestedTags).toEqual(['shortcut', 'feature']);
+    expect(item.body).toBe('--- Description ---\nAdd the legal disclaimer under the promo banner.');
+    expect(item.suggestedProject).toBeUndefined();
+  });
+
+  it('date preference falls back completed > started > created', () => {
+    const noCompleted = { ...story, completedAt: undefined };
+    expect(mapShortcutStoryToRawItem(noCompleted, ['follower']).date).toBe('2026-05-03');
+    const createdOnly = { ...story, completedAt: undefined, startedAt: undefined };
+    expect(mapShortcutStoryToRawItem(createdOnly, ['follower']).date).toBe('2026-05-01');
+  });
+
+  it('frontmatter is the shared shortcut object plus roles — and no shortcut_ids', () => {
+    const item = mapShortcutStoryToRawItem(story, ['owner', 'follower']);
+    expect(item.extraFrontmatter).toEqual({
+      shortcut: {
+        ...storyFrontmatter(story).shortcut,
+        roles: ['owner', 'follower']
+      }
+    });
+    expect(item.extraFrontmatter?.shortcut_ids).toBeUndefined();
+  });
+
+  it('no description ⇒ no body block', () => {
+    const bare = mapShortcutStory(FOLLOWED_STORY, RESOLVE); // description dropped
+    expect(mapShortcutStoryToRawItem(bare, ['follower']).body).toBeUndefined();
+  });
+});
+
+// T6
+describe('description caps (import vs enrichment)', () => {
+  const longRaw = { ...RAW_STORY, description: 'word '.repeat(500) }; // 2,500 chars
+
+  it('the import cap truncates at the last whitespace ≤ 2000 with the marker', () => {
+    const s = mapShortcutStory(longRaw, RESOLVE, { includeDescription: true, cap: IMPORT_DESCRIPTION_CAP });
+    expect(s.description).toContain('… [description truncated at 2000 chars]');
+    const head = s.description!.split('\n\n')[0];
+    expect(head.length).toBeLessThanOrEqual(2000);
+    expect(head.endsWith('word')).toBe(true); // never mid-word
+  });
+
+  it('the enrichment default still truncates at 500', () => {
+    const s = mapShortcutStory(longRaw, RESOLVE, { includeDescription: true });
+    expect(s.description).toContain('… [description truncated at 500 chars]');
+  });
+});
+
+// T7
+describe('fetchShortcutStoryItems', () => {
+  it('keeps only my stories; resolution maps fetched once', async () => {
+    const requests: HttpRequest[] = [];
+    const notMine = { ...RAW_STORY, id: 999, name: 'Someone else', follower_ids: ['uuid-other'] };
+    const http = fakeImportHttp(requests, { search: () => [FOLLOWED_STORY, notMine] });
+    const items = await fetchShortcutStoryItems(http, 'tok', { since: '2026-01-01', until: '2026-06-30' });
+    expect(items).toHaveLength(1);
+    expect(items[0].sourceId).toBe('57886');
+    // Resolved via the once-fetched maps.
+    expect((items[0].extraFrontmatter?.shortcut as Record<string, unknown>).state).toBe('Done');
+    // 1 member + 1 search + 3 maps.
+    expect(requests).toHaveLength(5);
+    expect(requests.filter((r) => r.url.endsWith('/workflows'))).toHaveLength(1);
+  });
+
+  it('a zero-match window fetches no resolution maps (2 requests total)', async () => {
+    const requests: HttpRequest[] = [];
+    const notMine = { ...RAW_STORY, follower_ids: ['uuid-other'] };
+    const http = fakeImportHttp(requests, { search: () => [notMine] });
+    const items = await fetchShortcutStoryItems(http, 'tok', { since: '2026-01-01', until: '2026-06-30' });
+    expect(items).toEqual([]);
+    expect(requests).toHaveLength(2);
+  });
+});
+
+// T9 — enrichment regression pin: after the storyFrontmatter extraction the
+// enrichment output is byte-identical (the full-fixture equality lives in the
+// shortcutEnrichment suite above; this pins the two paths to ONE builder).
+describe('storyFrontmatter extraction (T9)', () => {
+  it('shortcutEnrichment frontmatter === storyFrontmatter output', () => {
+    const story = mapShortcutStory(RAW_STORY, RESOLVE);
+    expect(shortcutEnrichment(story).frontmatter).toEqual(storyFrontmatter(story));
+    const sparse = { id: '1', name: 'Thing' };
+    expect(shortcutEnrichment(sparse).frontmatter).toEqual(storyFrontmatter(sparse));
   });
 });

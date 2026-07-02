@@ -38,8 +38,8 @@ src/lib/core/        Framework-agnostic TypeScript core (no Tauri, no browser).
   record.ts            RecordStore facade — write-text-first CRUD.
   git.ts               Explicit Sync (pull --rebase / add / commit / push).
   feeds.ts             Saved, re-runnable import configs (machine-local) + refresh.
-  ingest/              Provider adapters (GitHub, Asana, Gmail, LinkedIn,
-                         résumé, your own website, Claude Code, Warp,
+  ingest/              Provider adapters (GitHub, Asana, Shortcut, Gmail,
+                         LinkedIn, résumé, your own website, Claude Code, Warp,
                          NeuroSkill EEG sessions) → candidates in the inbox.
   triage/              Prefilter + optional LLM pass: a keep|frivolous sort
                          signal; never deletes or auto-rejects.
@@ -87,9 +87,9 @@ Beyond hand-written journal entries, the app can pull history in from external
 sources and help you shape it — but **nothing reaches the record without your
 explicit promote.**
 
-- **Ingest** (`src/lib/core/ingest/`) — adapters for GitHub, Asana, Gmail,
-  LinkedIn, an imported résumé, your own personal website, your Claude Code
-  and Warp AI history, and your NeuroSkill EEG focus sessions map provider data
+- **Ingest** (`src/lib/core/ingest/`) — adapters for GitHub, Asana, Shortcut,
+  Gmail, LinkedIn, an imported résumé, your own personal website, your Claude
+  Code and Warp AI history, and your NeuroSkill EEG focus sessions map provider data
   into normalized items, landing them as
   *candidates in a review inbox* (never the record). Mappers are pure and
   fixture-tested; the layer never touches the record, secrets, or the index
@@ -99,7 +99,13 @@ explicit promote.**
   configurable) are always tagged with it; with a Shortcut token saved, imports —
   and an inbox backfill button — also enrich them with that story's metadata
   (name, state, epic…), one fetch per distinct ticket, description off by
-  default. The website importer fetches only the pages you enter (and a sitemap
+  default. With that same token, Shortcut is also a source of its own: a
+  windowed import of the stories you *follow* (following accretes from owning,
+  requesting, or commenting and survives reassignment, so handed-off work still
+  comes back; archived stories included), each carrying its bounded description
+  and your provable roles. At promote time, a GitHub candidate tagged with a
+  story already promoted into the record gets that entry prefilled as its
+  parent — a visible suggestion you can clear. The website importer fetches only the pages you enter (and a sitemap
   you point at) — it is not a crawler — and treats the polished prose as a prompt
   to write the rawer truth underneath. The NeuroSkill importer reads past EEG
   sessions from another app's local SQLite (read-only, `eeg_timeseries` + `labels`
@@ -113,7 +119,7 @@ explicit promote.**
   `keep | frivolous` sort signal. It only sorts: never deletes, hides, or
   auto-rejects, and the signal is stripped on promote.
 - **Feeds** (`src/lib/core/feeds.ts`) — save a configured source (GitHub, Asana,
-  Gmail, website, Claude Code, Warp, or NeuroSkill) as a re-runnable *feed*, then **Refresh all** to
+  Shortcut, Gmail, website, Claude Code, Warp, or NeuroSkill) as a re-runnable *feed*, then **Refresh all** to
   re-pull every one in a click. Feeds are machine-local (localStorage, never the
   record — tokens stay in the keyring), and re-running only stages what's new.
   Inbox-only like every import; nothing is auto-promoted.

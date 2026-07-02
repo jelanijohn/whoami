@@ -194,6 +194,21 @@ describe('effectiveLiveParams — window derivation (spec §3.4, §10.2)', () =>
     expect(effectiveLiveParams(feed).since).toBe('2019-01-01');
   });
 
+  it('rolling shortcut derives since from lastRunAt; fixed passes params verbatim (T10)', () => {
+    const rolling: Feed = {
+      ...base,
+      kind: 'shortcut',
+      window: 'rolling',
+      lastRunAt: '2026-05-10T08:30:00.000Z',
+      params: { since: '2020-01-01', until: '2026-01-01' }
+    };
+    const p = effectiveLiveParams(rolling);
+    expect(p.since).toBe('2026-05-10');
+    expect(p.until).toBe('2026-01-01'); // untouched
+    const fixed: Feed = { ...rolling, window: 'fixed' };
+    expect(effectiveLiveParams(fixed)).toEqual({ since: '2020-01-01', until: '2026-01-01' });
+  });
+
   it('fixed github uses params.since verbatim even with lastRunAt set', () => {
     const feed: Feed = {
       ...base,

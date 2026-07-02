@@ -112,6 +112,11 @@ export interface PromoteOverrides {
    * candidate staged without one (needs_date). An empty string is treated as
    * "no date provided" and will not satisfy the gate. */
   date?: string;
+  /** Parent entry ULID to nest under (story-import spec §7) — e.g. the promoted
+   * Shortcut story a commit candidate belongs to. Prefilled as a suggestion by
+   * {@link RecordStore.suggestShortcutParent}; the human can clear it. An empty
+   * string clears; `undefined` leaves the candidate untouched. */
+  parent?: string;
 }
 
 /** The candidate inbox (ingest-reduce plan §1): staged-but-unreviewed ingested
@@ -509,6 +514,11 @@ export class RecordStore {
       if (project) fm.project = project;
       else delete fm.project;
     }
+    if (overrides.parent !== undefined) {
+      const parent = overrides.parent.trim();
+      if (parent) (fm as Record<string, unknown>).parent = parent;
+      else delete (fm as Record<string, unknown>).parent;
+    }
 
     // --- Date gate (allow-undated-imports spec §C) --------------------------
     // Apply an explicit date override first…
@@ -597,6 +607,28 @@ export class RecordStore {
   /** The entry id already carrying a (source, source_id), or null (dedupe). */
   findBySource(source: string, sourceId: string): Promise<string | null> {
     return dbFindBySource(this.platform.db, source, sourceId);
+  }
+
+  /**
+   * Promote-time parent assist (story-import spec §7): for a GitHub candidate
+   * enriched with a Shortcut story, look up the promoted story entry sharing
+   * that `shortcut.id` in the provenance index. Returns its ULID to *prefill*
+   * the parent field — a suggestion only; nothing auto-files. Index-only and
+   * read-only; any failure degrades to no prefill, never an error.
+   */
+  async suggestShortcutParent(candidate: Entry): Promise<string | null> {
+    if (candidate.frontmatter.source !== 'github') return null;
+    const sc = candidate.frontmatter.shortcut;
+    const id =
+      sc && typeof sc === 'object' && !Array.isArray(sc)
+        ? (sc as Record<string, unknown>).id
+        : undefined;
+    if (typeof id !== 'string' || !id) return null;
+    try {
+      return await this.findBySource('shortcut', id);
+    } catch {
+      return null;
+    }
   }
 
   /** All promoted source_ids for one source (bulk dedupe). */

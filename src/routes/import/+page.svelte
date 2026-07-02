@@ -105,6 +105,12 @@
     });
   }
 
+  async function runShortcut() {
+    persist();
+    const s = app.importSettings.shortcut;
+    await app.importShortcut({ since: s.since || undefined, until: s.until || undefined });
+  }
+
   async function runGmail() {
     persist();
     const m = app.importSettings.gmail;
@@ -157,6 +163,7 @@
   const SOURCES: SourceMeta[] = [
     { id: 'github', name: 'GitHub', glyph: 'commit', sub: 'Issues & PRs you authored', cat: 'connected' },
     { id: 'asana', name: 'Asana', glyph: 'task_alt', sub: 'Tasks you touched', cat: 'connected' },
+    { id: 'shortcut', name: 'Shortcut', glyph: 'bookmarks', sub: 'Stories you follow', cat: 'connected' },
     { id: 'gmail', name: 'Gmail', glyph: 'mail', sub: 'Subjects & snippets only', cat: 'connected' },
     { id: 'claude-code', name: 'Claude Code', glyph: 'terminal', sub: 'Session history · ~/.claude/projects', cat: 'local' },
     { id: 'warp', name: 'Warp', glyph: 'bolt', sub: 'Agent-mode history · warp.sqlite', cat: 'local' },
@@ -173,7 +180,7 @@
 
   /** Render-time status derived from existing app state (design handoff §3). */
   function sourceStatus(id: string): 'ok' | 'warn' | 'neutral' {
-    if (id === 'github' || id === 'asana' || id === 'gmail')
+    if (id === 'github' || id === 'asana' || id === 'shortcut' || id === 'gmail')
       return app.tokenPresent[id] ? 'ok' : 'warn';
     if (id === 'resume') return app.llmReady && app.docsAvailable ? 'ok' : 'warn';
     if (id === 'website') return app.llmReady ? 'ok' : 'warn';
@@ -408,7 +415,7 @@
                         {/if}
                       </select>
                     </label>
-                    {#if feed.kind === 'github' || feed.kind === 'asana'}
+                    {#if feed.kind === 'github' || feed.kind === 'asana' || feed.kind === 'shortcut'}
                       <label class="flex flex-col text-xs text-[var(--color-muted)]">
                         Window
                         <select
@@ -810,6 +817,35 @@
                   {@render saveAsFeedRow('asana')}
                 {/snippet}
                 {@render bodyOpen(asanaBody)}
+              {:else if s.id === 'shortcut'}
+                {#snippet shortcutBody()}
+                  <p class="text-xs text-[var(--color-muted)]">
+                    Stories you follow — following accretes from owning, requesting, or commenting and
+                    survives reassignment, so handed-off work still comes back. The window is on
+                    <em>last updated</em>; archived stories are included (abandoned work is exactly the
+                    lessons material the record keeps). Descriptions come along, bounded. Same token as
+                    the ticket enrichment under GitHub.
+                  </p>
+                  {@render tokenRow('shortcut', 'Shortcut API token')}
+                  <div class="flex flex-wrap items-end gap-2">
+                    <label class="flex flex-col text-xs text-[var(--color-muted)]">
+                      Since (updated)
+                      <input type="date" bind:value={app.importSettings.shortcut.since} class="{inputCls} w-40" use:closeDatePicker />
+                    </label>
+                    <label class="flex flex-col text-xs text-[var(--color-muted)]">
+                      Until (updated)
+                      <input type="date" bind:value={app.importSettings.shortcut.until} class="{inputCls} w-40" use:closeDatePicker />
+                    </label>
+                  </div>
+                  <div class="flex flex-wrap items-center gap-2 border-t border-dashed border-[var(--color-line)] pt-3">
+                    <button class={runCls} disabled={app.busy || !app.tokenPresent.shortcut} onclick={runShortcut}>
+                      <Icon name="sync" size={17} />
+                      Run Shortcut import
+                    </button>
+                  </div>
+                  {@render saveAsFeedRow('shortcut')}
+                {/snippet}
+                {@render bodyOpen(shortcutBody)}
               {:else if s.id === 'gmail'}
                 {#snippet gmailBody()}
                   <p class="text-xs text-[var(--color-muted)]">

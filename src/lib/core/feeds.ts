@@ -18,6 +18,7 @@ import type { IngestReport, IngestSource } from './ingest/types';
 export type FeedKind =
   | 'github'
   | 'asana'
+  | 'shortcut'
   | 'gmail'
   | 'claude-code'
   | 'warp'
@@ -57,7 +58,7 @@ export interface Feed {
    * provider is ready. */
   useLlm: boolean;
   /** 'fixed' uses `params.since/until` verbatim; 'rolling' derives `since` from
-   * `lastRunAt` (spec §3.4). Meaningful only for github/asana. */
+   * `lastRunAt` (spec §3.4). Meaningful only for github/asana/shortcut. */
   window: 'fixed' | 'rolling';
   /** ISO timestamp of the last successful run; drives rolling windows. */
   lastRunAt?: string;
@@ -161,7 +162,7 @@ export function buildFeed(input: FeedFormInput): Feed {
 /**
  * The effective live-API params for a run, applying the rolling-window `since`
  * derivation (spec §3.4):
- *  - github/asana + `window: 'rolling'` + `lastRunAt` ⇒ `since` becomes
+ *  - github/asana/shortcut + `window: 'rolling'` + `lastRunAt` ⇒ `since` becomes
  *    `lastRunAt`'s date (YYYY-MM-DD), overriding `params.since`; `until` is left
  *    alone (same-day overlap is harmless — dedupe drops known items).
  *  - gmail ⇒ `window` is ignored; the freeform query owns the window.
@@ -172,7 +173,7 @@ export function buildFeed(input: FeedFormInput): Feed {
 export function effectiveLiveParams(feed: Feed): Record<string, unknown> {
   const params = { ...(feed.params ?? {}) };
   if (
-    (feed.kind === 'github' || feed.kind === 'asana') &&
+    (feed.kind === 'github' || feed.kind === 'asana' || feed.kind === 'shortcut') &&
     feed.window === 'rolling' &&
     feed.lastRunAt
   ) {

@@ -26,6 +26,7 @@ export interface SourceMeta {
  * fall back to a neutral gray + generic glyph via {@link sourceMeta}. */
 export const SOURCE_META: Record<string, SourceMeta> = {
   github: { label: 'GitHub', color: '#24292f', glyph: 'code' },
+  shortcut: { label: 'Shortcut', color: '#6552d0', glyph: 'bookmarks' },
   gmail: { label: 'Gmail', color: '#c5331f', glyph: 'mail' },
   calendar: { label: 'Calendar', color: '#1a73e8', glyph: 'event' },
   linkedin: { label: 'LinkedIn', color: '#0a66c2', glyph: 'work' },
