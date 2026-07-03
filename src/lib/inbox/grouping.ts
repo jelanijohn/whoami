@@ -25,6 +25,13 @@ export const sourceOf = (c: Entry): string =>
   typeof c.frontmatter.source === 'string' ? c.frontmatter.source : '';
 export const projectOf = (c: Entry): string =>
   typeof c.frontmatter.project === 'string' ? c.frontmatter.project : '';
+/** Shortcut project name (story import + enriched GitHub items both carry
+ * `shortcut.project` when the workspace uses Projects). */
+export const shortcutProjectOf = (c: Entry): string => {
+  const sc = c.frontmatter.shortcut;
+  const p = sc && typeof sc === 'object' ? (sc as Record<string, unknown>).project : undefined;
+  return typeof p === 'string' ? p : '';
+};
 export const dateOf = (c: Entry): string => String(c.frontmatter.date ?? '');
 export const isFrivolous = (c: Entry): boolean => c.frontmatter.triage_signal === 'frivolous';
 export const tagsOf = (c: Entry): string[] =>
@@ -104,7 +111,7 @@ export function hasActiveFilters(o: FilterOpts): boolean {
 
 /** Client-side narrow over the in-memory inbox. Type/Source chips are OR within
  * a facet, AND across facets; status + project AND on top. Search matches title,
- * body, source, project title, and tags (case-insensitive). */
+ * body, source, project title, Shortcut project name, and tags (case-insensitive). */
 export function filterCandidates(list: Entry[], o: FilterOpts, ctx: InboxContext): Entry[] {
   const q = o.search.trim().toLowerCase();
   return list.filter((c) => {
@@ -124,6 +131,7 @@ export function filterCandidates(list: Entry[], o: FilterOpts, ctx: InboxContext
         c.body,
         sourceOf(c),
         slug ? ctx.projectTitle(slug) : '',
+        shortcutProjectOf(c),
         tagsOf(c).join(' ')
       ]
         .join(' ')

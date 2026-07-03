@@ -2,7 +2,7 @@
   import type { Entry, ProjectSummary } from '$lib/core';
   import Icon from '$lib/components/Icon.svelte';
   import { typeMeta, sourceMeta, alpha, KEPT_COLOR, FLAGGED_COLOR } from '$lib/inbox/theme';
-  import { changeSizeOf, isFrivolous, relativeDate, tagsOf } from '$lib/inbox/grouping';
+  import { changeSizeOf, isFrivolous, relativeDate, shortcutProjectOf, tagsOf } from '$lib/inbox/grouping';
 
   let {
     candidate,
@@ -62,13 +62,8 @@
   const triageReason = $derived(typeof fm.triage_reason === 'string' ? fm.triage_reason : '');
   const triageBy = $derived(fm.triage_source === 'llm' ? 'model' : 'prefilter');
   const tags = $derived(tagsOf(candidate));
-  // Shortcut project context line (story import + enriched GitHub items both
-  // carry `shortcut.project` when the workspace uses Projects).
-  const scProject = $derived.by(() => {
-    const sc = fm.shortcut;
-    const p = sc && typeof sc === 'object' ? (sc as Record<string, unknown>).project : undefined;
-    return typeof p === 'string' ? p : '';
-  });
+  // Shortcut project context line; shares the accessor with the inbox filter.
+  const scProject = $derived(shortcutProjectOf(candidate));
   const excerpt = $derived(
     candidate.body.length > 280 ? candidate.body.slice(0, 280).trimEnd() + '…' : candidate.body
   );
@@ -271,6 +266,7 @@
           href={sourceUrl}
           target="_blank"
           rel="noreferrer"
+          title={sourceUrl}
           class="inline-flex items-center gap-1 text-[12px] text-[var(--color-accent)] hover:underline"
         >
           View source <Icon name="open_in_new" size={13} />

@@ -231,6 +231,8 @@
     selected.clear();
     bulkTags = [];
     newTagText = '';
+    tagMenuOpen = false;
+    tagMenuFilter = '';
   }
   function toggleSelectAll() {
     if (allVisibleSelected) for (const p of visiblePaths) selected.delete(p);
@@ -376,10 +378,18 @@
   }
 
   // --- Bulk tags ---------------------------------------------------------
-  // The bulk bar offers the record's most-used tags as toggle chips; anything
-  // typed in becomes a removable chip alongside them.
+  // The bulk bar offers the record's most-used tags as toggle chips; every
+  // other record tag is reachable through the "All tags" dropdown, and
+  // anything typed in becomes a removable chip alongside them.
   const recordTags = $derived(app.tags.slice(0, 12).map((t) => t.tag));
   const customTags = $derived(bulkTags.filter((t) => !recordTags.includes(t)));
+  let tagMenuOpen = $state(false);
+  let tagMenuFilter = $state('');
+  const tagMenuTags = $derived(
+    tagMenuFilter.trim()
+      ? app.tags.filter((t) => t.tag.toLowerCase().includes(tagMenuFilter.trim().toLowerCase()))
+      : app.tags
+  );
   function toggleBulkTag(tag: string) {
     bulkTags = bulkTags.includes(tag) ? bulkTags.filter((t) => t !== tag) : [...bulkTags, tag];
   }
@@ -547,7 +557,8 @@
 <svelte:window
   onkeydown={(e) => {
     if (e.key !== 'Escape') return;
-    if (currentSlug) cancelPromote();
+    if (tagMenuOpen) tagMenuOpen = false;
+    else if (currentSlug) cancelPromote();
     else if (mergeOpen) closeMergeDialog();
   }}
 />
@@ -852,6 +863,69 @@
               #{t} <Icon name="close" size={12} />
             </button>
           {/each}
+          {#if app.tags.length > recordTags.length}
+            <!-- The chip row caps at the 12 most-used tags; this dropdown reaches
+                 the rest. A picked tag outside the top 12 surfaces as a removable
+                 chip via customTags above. -->
+            <div class="relative">
+              <button
+                onclick={() => (tagMenuOpen = !tagMenuOpen)}
+                aria-haspopup="listbox"
+                aria-expanded={tagMenuOpen}
+                class="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[12px] font-medium"
+                style="background:white;border:1px solid #c8d2f3;color:#7a86b8;"
+              >
+                All tags ({app.tags.length}) <Icon name="expand_more" size={13} />
+              </button>
+              {#if tagMenuOpen}
+                <button
+                  class="fixed inset-0 z-40 cursor-default"
+                  aria-label="Close tag list"
+                  onclick={() => (tagMenuOpen = false)}
+                ></button>
+                <div
+                  class="absolute left-0 top-[calc(100%+6px)] z-50 w-[248px] overflow-hidden rounded-xl border bg-white"
+                  style="border-color:#c8d2f3;box-shadow:0 12px 32px -8px rgba(40,50,90,0.3)"
+                >
+                  <div class="border-b p-2" style="border-color:#dbe3f8">
+                    <!-- svelte-ignore a11y_autofocus -->
+                    <input
+                      bind:value={tagMenuFilter}
+                      autofocus
+                      placeholder="Filter tags…"
+                      class="h-7 w-full rounded-lg border bg-white px-2 text-[12px] outline-none placeholder:text-[#8e99c4] focus:border-[var(--color-accent)]"
+                      style="border-color:#c8d2f3;color:#1d2742"
+                    />
+                  </div>
+                  <div class="max-h-64 overflow-y-auto py-1" role="listbox" aria-multiselectable="true">
+                    {#each tagMenuTags as t (t.tag)}
+                      {@const sel = bulkTags.includes(t.tag)}
+                      <button
+                        role="option"
+                        aria-selected={sel}
+                        onclick={() => toggleBulkTag(t.tag)}
+                        class="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[12px] hover:bg-[rgba(58,90,190,0.06)]"
+                        style="color:{sel ? '#2a3a7a' : '#4a5578'}"
+                      >
+                        <span
+                          class="grid h-3.5 w-3.5 shrink-0 place-items-center rounded"
+                          style={sel
+                            ? 'background:var(--color-accent);color:white;'
+                            : 'border:1px solid #c8d2f3;'}
+                        >
+                          {#if sel}<Icon name="check" size={10} strokeWidth={3.5} />{/if}
+                        </span>
+                        <span class="truncate">#{t.tag}</span>
+                        <span class="ml-auto shrink-0 text-[11px] text-[#8e99c4]">{t.count}</span>
+                      </button>
+                    {:else}
+                      <p class="px-2.5 py-2 text-[12px] text-[#8e99c4]">No tags match.</p>
+                    {/each}
+                  </div>
+                </div>
+              {/if}
+            </div>
+          {/if}
           <input
             bind:value={newTagText}
             placeholder="new tag…"
