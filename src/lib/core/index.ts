@@ -94,6 +94,16 @@ export {
 } from './record';
 
 export {
+  ticketOf,
+  normalizedTitleKey,
+  buildMergedEntry,
+  mergedTitleDefault,
+  mergeLedger,
+  shortcutStoryTitle,
+  type MergeOverrides
+} from './merge';
+
+export {
   status as gitStatus,
   sync as gitSync,
   init as gitInit,

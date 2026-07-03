@@ -1,6 +1,6 @@
 <script lang="ts">
   import { SvelteSet } from 'svelte/reactivity';
-  import { slugify, ENTRY_TYPES, type Entry } from '$lib/core';
+  import { slugify, mergedTitleDefault, mergeLedger, ENTRY_TYPES, type Entry } from '$lib/core';
   import { app } from '$lib/state.svelte';
   import Icon from '$lib/components/Icon.svelte';
   import CandidateRow from '$lib/components/CandidateRow.svelte';
@@ -17,6 +17,7 @@
     projectOf,
     type FrivolousMode,
     type GroupBy,
+    type InboxGroup,
     type SortKey,
     type SortDir,
     type InboxContext
@@ -236,6 +237,144 @@
     else for (const p of visiblePaths) selected.add(p);
   }
 
+  // --- Group-header select (merge spec §5.1) ---------------------------------
+  // The bridge between grouping and the merge action: a group header checkbox
+  // selects/deselects the whole group's paths into the existing `selected` set
+  // — no separate per-group merge state. Title-fallback groups never expand a
+  // selection on their own (prohibition 3); this is always an explicit click.
+  function groupPaths(g: InboxGroup): string[] {
+    return g.candidates.map((c) => c.path!).filter(Boolean);
+  }
+  function groupAllSelected(g: InboxGroup): boolean {
+    const ps = groupPaths(g);
+    return ps.length > 0 && ps.every((p) => selected.has(p));
+  }
+  function groupSomeSelected(g: InboxGroup): boolean {
+    return groupPaths(g).some((p) => selected.has(p)) && !groupAllSelected(g);
+  }
+  function toggleGroupSelect(g: InboxGroup) {
+    const ps = groupPaths(g);
+    if (groupAllSelected(g)) for (const p of ps) selected.delete(p);
+    else for (const p of ps) selected.add(p);
+  }
+
+  // --- Merge-at-promote (merge spec §5.2) -------------------------------------
+  const isoOk = (s: string) => /^\d{4}-\d{2}-\d{2}$/.test(s);
+  let mergeOpen = $state(false);
+  let mergePaths = $state<string[]>([]);
+  let mergeTitle = $state('');
+  let mergeDate = $state('');
+  let mergeProject = $state('');
+  let mergeParent = $state('');
+  let mergeParentHint = $state('');
+  // True while the project-resolution dialog is settling a novel slug FOR a
+  // pending merge (the same dialog machinery as beginPromote — never a fork).
+  let mergeResolving = $state(false);
+
+  const selectedCandidates = $derived(
+    [...selected].map((p) => byPath.get(p)).filter((c): c is Entry => !!c)
+  );
+  const mergeEligible = $derived(
+    selectedCount >= 2 && selectedCandidates.every((c) => sourceOf(c) === 'github')
+  );
+  const mergeHint = $derived(
+    selectedCount < 2
+      ? 'Select at least 2 candidates to merge'
+      : mergeEligible
+        ? 'Collapse the selected candidates into ONE record entry'
+        : 'Only GitHub candidates can be merged — the selection mixes sources'
+  );
+  const mergeCandidates = $derived(
+    mergePaths.map((p) => byPath.get(p)).filter((c): c is Entry => !!c)
+  );
+  const mergePreview = $derived(mergeOpen || mergeResolving ? mergeLedger(mergeCandidates) : []);
+  const mergeDateOk = $derived(isoOk(mergeDate));
+  // The dialog's project select may carry a shared suggestion that isn't a
+  // project yet — shown like CandidateRow's "(suggested)" orphan option.
+  const mergeProjectOrphan = $derived(
+    mergeProject !== '' && !app.projects.some((p) => p.slug === mergeProject)
+  );
+
+  async function openMergeDialog() {
+    const sel = selectedCandidates;
+    if (sel.length < 2) return;
+    mergePaths = sel.map((c) => c.path!).filter(Boolean);
+    mergeTitle = mergedTitleDefault(sel);
+    // Max valid constituent date; empty (red/blocked) when all are undated.
+    mergeDate = sel
+      .map((c) => (typeof c.frontmatter.date === 'string' && isoOk(c.frontmatter.date) ? c.frontmatter.date : ''))
+      .reduce((a, b) => (b > a ? b : a), '');
+    // Seed per the bulk bar's current project semantics: KEEP → the shared
+    // suggestion when all constituents agree, else none.
+    if (bulkProject === KEEP) {
+      const suggestions = sel.map(getProject);
+      mergeProject =
+        suggestions[0] && suggestions.every((s) => s === suggestions[0]) ? suggestions[0] : '';
+    } else {
+      mergeProject = bulkProject;
+    }
+    mergeParent = '';
+    mergeParentHint = '';
+    mergeOpen = true;
+    // Parent assist (story-import spec §7) against the first shortcut-carrying
+    // constituent — a visible, clearable suggestion, same as CandidateRow.
+    const carrier = sel.find(
+      (c) => c.frontmatter.shortcut && typeof c.frontmatter.shortcut === 'object'
+    );
+    if (carrier) {
+      const ulid = await app.suggestShortcutParent(carrier);
+      if (ulid && mergeOpen) {
+        const sc = carrier.frontmatter.shortcut as Record<string, unknown>;
+        mergeParent = ulid;
+        mergeParentHint = `sc-${String(sc.id ?? '')}`;
+      }
+    }
+  }
+  function clearMergeParent() {
+    mergeParent = '';
+    mergeParentHint = '';
+  }
+  function closeMergeDialog() {
+    mergeOpen = false;
+    mergeResolving = false;
+    mergePaths = [];
+  }
+  async function confirmMerge() {
+    const slug = mergeProject.trim();
+    if (slug && !app.projects.some((p) => p.slug === slug)) {
+      // A novel slug routes through the SAME project-resolution dialog flow as
+      // beginPromote (create / file-under / promote-anyway) before merging.
+      mergeResolving = true;
+      mergeOpen = false;
+      resolutions = new Map();
+      unresolved = [slug];
+      resolveTotal = 1;
+      primeDialog();
+      return;
+    }
+    await runMerge(slug);
+  }
+  async function finalizeMerge() {
+    const slug = mergeProject.trim();
+    const resolved = resolutions.get(slug) ?? slug;
+    resolutions = new Map();
+    resolveTotal = 0;
+    await runMerge(resolved);
+  }
+  async function runMerge(projectSlug: string) {
+    const paths = [...mergePaths];
+    const overrides = {
+      title: mergeTitle,
+      date: mergeDate,
+      project: projectSlug, // explicit dialog choice — '' clears
+      parent: mergeParent || undefined,
+      tags: bulkTags.length ? [...bulkTags] : undefined
+    };
+    closeMergeDialog();
+    clearSelection();
+    promotedCount += await app.promoteMerged(paths, overrides);
+  }
+
   // --- Bulk tags ---------------------------------------------------------
   // The bulk bar offers the record's most-used tags as toggle chips; anything
   // typed in becomes a removable chip alongside them.
@@ -295,14 +434,22 @@
   const affectedOthers = $derived(
     currentSlug
       ? app.candidates.filter(
-          (c) => c.frontmatter.project === currentSlug && !promoteItems?.some((i) => i.path === c.path)
+          (c) =>
+            c.frontmatter.project === currentSlug &&
+            (mergeResolving
+              ? !mergePaths.includes(c.path ?? '')
+              : !promoteItems?.some((i) => i.path === c.path))
         ).length
       : 0
   );
   function advance() {
     unresolved = unresolved.slice(1);
-    if (unresolved.length === 0) void finalize();
-    else primeDialog();
+    if (unresolved.length > 0) {
+      primeDialog();
+      return;
+    }
+    if (mergeResolving) void finalizeMerge();
+    else void finalize();
   }
   async function finalize() {
     const items = promoteItems!.map((i) => ({
@@ -340,6 +487,13 @@
   }
   function cancelPromote() {
     reset();
+    if (mergeResolving) {
+      // Cancelling the resolution walk returns to the merge dialog so the
+      // human can pick a different project — the merge itself isn't dropped.
+      mergeResolving = false;
+      mergeOpen = true;
+      return;
+    }
     clearSelection();
   }
   function focusOnMount(node: HTMLInputElement) {
@@ -392,7 +546,9 @@
 
 <svelte:window
   onkeydown={(e) => {
-    if (currentSlug && e.key === 'Escape') cancelPromote();
+    if (e.key !== 'Escape') return;
+    if (currentSlug) cancelPromote();
+    else if (mergeOpen) closeMergeDialog();
   }}
 />
 
@@ -585,6 +741,7 @@
             <option value="source">Source</option>
             <option value="type">Type</option>
             <option value="project">Project</option>
+            <option value="ticket">Ticket</option>
             <option value="status">Status</option>
             <option value="none">Flat list</option>
           </select>
@@ -644,6 +801,15 @@
                 <option value={p.slug}>{p.entry.frontmatter.title}</option>
               {/each}
             </select>
+            <button
+              onclick={() => void openMergeDialog()}
+              disabled={app.busy || !mergeEligible}
+              title={mergeHint}
+              class="inline-flex h-8 items-center gap-1.5 rounded-lg border bg-white px-3 text-[12px] font-semibold text-[#2a3a7a] disabled:opacity-50"
+              style="border-color:#c8d2f3"
+            >
+              <Icon name="commit" size={14} /> Merge into one entry
+            </button>
             <button
               onclick={() => void rejectSelected()}
               disabled={app.busy}
@@ -724,10 +890,29 @@
           {@const open = groupBy === 'none' || expandedGroups.has(g.key)}
           <div class="overflow-hidden rounded-[14px] border border-[var(--color-line)] bg-white dark:bg-[var(--color-bar)]">
             {#if groupBy !== 'none' && g.swatch}
-              <button
-                onclick={() => toggleGroup(g.key)}
-                class="flex w-full items-center gap-[11px] border-none bg-transparent px-4 py-3 text-left"
-              >
+              <div class="flex w-full items-center">
+                <!-- Group select (merge spec §5.1): selects/deselects the whole
+                     group into the bulk selection — the bridge to Merge/Reject N. -->
+                <button
+                  type="button"
+                  aria-label="Select all in “{g.label}”"
+                  aria-pressed={groupAllSelected(g)}
+                  onclick={() => toggleGroupSelect(g)}
+                  class="ml-4 grid size-[17px] shrink-0 place-items-center rounded-[5px] transition-all duration-100"
+                  style={groupAllSelected(g)
+                    ? 'background:var(--color-accent);border:1px solid var(--color-accent);'
+                    : groupSomeSelected(g)
+                      ? `background:${alpha('var(--color-accent)', 20)};border:1.5px solid var(--color-accent);`
+                      : 'background:white;border:1.5px solid var(--color-edge);'}
+                >
+                  {#if groupAllSelected(g)}
+                    <span class="text-white"><Icon name="check" size={13} strokeWidth={3} /></span>
+                  {/if}
+                </button>
+                <button
+                  onclick={() => toggleGroup(g.key)}
+                  class="flex min-w-0 flex-1 items-center gap-[11px] border-none bg-transparent py-3 pl-[11px] pr-4 text-left"
+                >
                 <span
                   class="jv-chevron shrink-0 text-[20px] text-[var(--jv-chevron)] transition-transform duration-150 ease-out"
                   style="transform:rotate({open ? 90 : 0}deg)">›</span
@@ -750,7 +935,8 @@
                   class="ml-auto rounded-full bg-[var(--jv-chip-bg)] px-[9px] py-0.5 text-[12px] font-semibold tabular-nums text-[var(--color-muted)]"
                   >{g.candidates.length}</span
                 >
-              </button>
+                </button>
+              </div>
             {/if}
             {#if open}
               <div class:border-t={groupBy !== 'none'} class="border-[var(--jv-hair)]">
@@ -897,6 +1083,110 @@
             Create &amp; promote
           </button>
         {/if}
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!-- Merge preview dialog (merge spec §5.2): candidates in → ONE entry out.
+     Nothing is written until the explicit confirm (prohibition 3). -->
+{#if mergeOpen}
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+    <div
+      class="flex max-h-[85vh] w-full max-w-xl flex-col gap-3 overflow-y-auto rounded-lg border border-[var(--color-line)] bg-white p-5 shadow-lg dark:bg-[#1e1f24]"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="merge-title"
+    >
+      <h2 id="merge-title" class="text-base font-semibold">
+        Merge {mergePaths.length} candidates into one entry
+      </h2>
+      <p class="text-sm text-[var(--color-muted)]">
+        The {mergePaths.length} selected GitHub items become ONE journal entry carrying every
+        item's provenance, so re-imports skip them all. The candidates are consumed; the record
+        gains a single entry.
+      </p>
+
+      <label class="flex flex-col text-xs font-medium text-[var(--color-muted)]">
+        Title
+        <input
+          bind:value={mergeTitle}
+          use:focusOnMount
+          placeholder="Merged entry title"
+          class="mt-1 rounded border border-[var(--color-line)] px-2 py-1.5 text-sm"
+        />
+      </label>
+
+      <div class="flex flex-wrap gap-3">
+        <label class="flex flex-col text-xs font-medium text-[var(--color-muted)]">
+          Date
+          <input
+            type="date"
+            bind:value={mergeDate}
+            class="mt-1 rounded border px-2 py-1.5 text-sm"
+            style="border-color:{mergeDateOk ? 'var(--color-line)' : '#c5331f'}"
+          />
+          {#if !mergeDateOk}
+            <span class="mt-0.5 text-[11px] text-[#c5331f]"
+              >No constituent has a date — set one to merge (never defaults to today).</span
+            >
+          {/if}
+        </label>
+        <label class="flex min-w-[180px] flex-1 flex-col text-xs font-medium text-[var(--color-muted)]">
+          Project
+          <select
+            bind:value={mergeProject}
+            class="mt-1 rounded border border-[var(--color-line)] px-2 py-1.5 text-sm"
+          >
+            <option value="">— none —</option>
+            {#each app.projects as p (p.slug)}
+              <option value={p.slug}>{p.entry.frontmatter.title}</option>
+            {/each}
+            {#if mergeProjectOrphan}
+              <option value={mergeProject}>{mergeProject} (suggested)</option>
+            {/if}
+          </select>
+        </label>
+      </div>
+
+      {#if mergeParent && mergeParentHint}
+        <p class="m-0 flex items-center gap-1.5 text-[11.5px] text-[var(--color-muted)]">
+          <span class="shrink-0"><Icon name="info" size={15} /></span>
+          <span>Matched Shortcut story {mergeParentHint} — merging files this under its entry.</span>
+          <button
+            type="button"
+            title="Clear the suggested parent"
+            onclick={clearMergeParent}
+            class="rounded px-1 text-[var(--color-private)] hover:underline"
+          >
+            clear
+          </button>
+        </p>
+      {/if}
+
+      <!-- Read-only ledger preview — exactly what the merged body will assert. -->
+      <div class="flex flex-col gap-1">
+        <span class="text-xs font-medium text-[var(--color-muted)]">The merged entry will record</span>
+        <pre
+          class="m-0 max-h-52 overflow-auto rounded border border-[var(--color-line)] bg-[var(--color-paper)] px-2.5 py-2 text-[11.5px] leading-[1.6] text-[var(--jv-body)]">{mergePreview.join(
+            '\n'
+          )}</pre>
+      </div>
+
+      <div class="flex items-center justify-end gap-2 pt-1">
+        <button
+          class="mr-auto rounded px-2.5 py-1.5 text-sm text-[var(--color-muted)] hover:bg-gray-100 dark:hover:bg-white/10"
+          onclick={closeMergeDialog}
+        >
+          Cancel
+        </button>
+        <button
+          class="rounded bg-[var(--color-accent)] px-3 py-1.5 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
+          disabled={app.busy || !mergeTitle.trim() || !mergeDateOk}
+          onclick={() => void confirmMerge()}
+        >
+          Merge &amp; promote as 1
+        </button>
       </div>
     </div>
   </div>

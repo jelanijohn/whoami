@@ -45,6 +45,7 @@ import {
   touchEntry,
   type NewEntryInput
 } from './entry';
+import { buildMergedEntry, type MergeOverrides } from './merge';
 import {
   rollupEntries,
   runReducePipeline,
@@ -556,6 +557,40 @@ export class RecordStore {
     await this.platform.fs.removeFile(this.abs(candidatePath));
     await reindexFile(this.platform, this.recordRoot, newPath);
     return { ...next, path: newPath };
+  }
+
+  /**
+   * Merge-at-promote (merge spec §3): collapse N staged candidates into ONE
+   * record entry carrying multi-row provenance, then retire every constituent
+   * candidate file. The standard write order — text first, then index. Inbox
+   * candidates only (D4): already-promoted entries are never merged or mutated.
+   *
+   * Failure stance: steps 1–2 are effect-free (all validation throws happen in
+   * {@link buildMergedEntry} before any filesystem effect). A constituent
+   * delete failing after the merged entry was written is harmless — its
+   * (source, source_id) is now in provenance, so the pipeline's
+   * skippedPromoted path retires it on the next dedupe pass. No rollback.
+   */
+  async promoteMerged(candidatePaths: string[], overrides: MergeOverrides): Promise<Entry> {
+    for (const p of candidatePaths) {
+      if (!p.startsWith(`${INBOX_DIR}/`)) {
+        throw new Error(`Only inbox candidates can be merged — not "${p}".`);
+      }
+    }
+    const candidates: Entry[] = [];
+    for (const p of candidatePaths) candidates.push(await this.readEntryFile(p));
+    const merged = buildMergedEntry(candidates, overrides);
+    const newPath = merged.path ?? expectedPath(merged);
+    await this.writeEntryFile({ ...merged, path: newPath });
+    for (const p of candidatePaths) {
+      try {
+        await this.platform.fs.removeFile(this.abs(p));
+      } catch {
+        /* leftover candidate is harmless — provenance retires it next pass */
+      }
+    }
+    await reindexFile(this.platform, this.recordRoot, newPath);
+    return { ...merged, path: newPath };
   }
 
   /** Reject a candidate: remember its provenance (so it is never re-proposed)

@@ -74,6 +74,7 @@ import {
   type IngestReport,
   type Llm,
   type LlmConfig,
+  type MergeOverrides,
   type NewEntryInput,
   type Platform,
   type Profile,
@@ -721,6 +722,23 @@ class AppState {
         await this.refresh();
         this.message = `Promoted ${ok} candidate${ok === 1 ? '' : 's'}${failed ? `, ${failed} failed` : ''}`;
         return ok;
+      })) ?? 0
+    );
+  }
+
+  /** Merge-at-promote (merge spec §4): collapse the selected candidates into
+   * ONE record entry via {@link RecordStore.promoteMerged}. Returns the number
+   * of candidates CONSUMED (paths.length), so the inbox session counter keeps
+   * counting inbox items retired, not record entries created. */
+  async promoteMerged(paths: string[], overrides: MergeOverrides): Promise<number> {
+    if (!this.store || paths.length === 0) return 0;
+    return (
+      (await this.guard(async () => {
+        const e = await this.store!.promoteMerged(paths, overrides);
+        this.candidates = await this.store!.listCandidates();
+        await this.refresh();
+        this.message = `Merged ${paths.length} candidates into “${e.frontmatter.title}”`;
+        return paths.length;
       })) ?? 0
     );
   }

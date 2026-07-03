@@ -140,6 +140,21 @@ async function upsertEntry(
       [fm.id, src, srcId]
     );
   }
+  // Merged entries (merge spec §2) additionally carry `source_ids: string[]` —
+  // the full constituent set (D2). Each projects into its own provenance row so
+  // the pipeline's dedupe skips every constituent on re-import. OR IGNORE makes
+  // the scalar/array overlap (the primary appears in both) a silent no-op.
+  const srcIds = Array.isArray(fm.source_ids)
+    ? (fm.source_ids as unknown[]).filter((v): v is string => typeof v === 'string' && v !== '')
+    : [];
+  if (src) {
+    for (const sid of srcIds) {
+      await db.execute(
+        `INSERT OR IGNORE INTO provenance (entry_id, source, source_id) VALUES (?, ?, ?)`,
+        [fm.id, src, sid]
+      );
+    }
+  }
   await db.execute(`INSERT INTO entries_fts (id, title, body) VALUES (?, ?, ?)`, [
     fm.id,
     fm.title,

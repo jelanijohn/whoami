@@ -36,6 +36,8 @@ src/lib/core/        Framework-agnostic TypeScript core (no Tauri, no browser).
   profile-merge.ts     Pure propose→merge for identity links (review-gated).
   index-db.ts          The derived SQLite index: incremental + full rebuild.
   record.ts            RecordStore facade — write-text-first CRUD.
+  merge.ts             Pure merge-at-promote: N same-ticket candidates → ONE
+                         entry with multi-row provenance (deterministic, no LLM).
   git.ts               Explicit Sync (pull --rebase / add / commit / push).
   feeds.ts             Saved, re-runnable import configs (machine-local) + refresh.
   ingest/              Provider adapters (GitHub, Asana, Shortcut, Gmail,
@@ -105,7 +107,12 @@ explicit promote.**
   comes back; archived stories included), each carrying its bounded description
   and your provable roles. At promote time, a GitHub candidate tagged with a
   story already promoted into the record gets that entry prefilled as its
-  parent — a visible suggestion you can clear. The website importer fetches only the pages you enter (and a sitemap
+  parent — a visible suggestion you can clear. The inbox can also group by
+  ticket (Shortcut id, with a marked title-similarity fallback) and **merge**
+  N selected GitHub candidates into ONE entry at the promote gate: a ledger of
+  every commit/PR plus their deduplicated messages, carrying every
+  constituent's provenance so re-imports skip them all. Deterministic, preview
+  first, and never applied to already-promoted entries. The website importer fetches only the pages you enter (and a sitemap
   you point at) — it is not a crawler — and treats the polished prose as a prompt
   to write the rawer truth underneath. The NeuroSkill importer reads past EEG
   sessions from another app's local SQLite (read-only, `eeg_timeseries` + `labels`

@@ -8,7 +8,13 @@
  */
 
 import type { Entry } from '$lib/core';
+import { normalizedTitleKey, shortcutStoryTitle, ticketOf } from '$lib/core';
 import { typeMeta, typeOrder, sourceMeta, sourceOrder, KEPT_COLOR, FLAGGED_COLOR } from './theme';
+
+// The ticket-grouping accessors live in the pure core (merge spec §1.1–1.2, so
+// they're vitest-covered off-device); re-exported here alongside their
+// siblings so the inbox keeps one import surface for field accessors.
+export { normalizedTitleKey, ticketOf };
 
 // --- Field accessors (read-tolerant, matching the old CandidateCard) --------
 
@@ -167,7 +173,7 @@ export function sortCandidates(list: Entry[], key: SortKey, dir: SortDir): Entry
 
 // --- Grouping ---------------------------------------------------------------
 
-export type GroupBy = 'source' | 'type' | 'project' | 'status' | 'none';
+export type GroupBy = 'source' | 'type' | 'project' | 'ticket' | 'status' | 'none';
 
 export interface GroupSwatch {
   /** 'tile' = rounded source tile with a glyph; 'square' = small color chip. */
@@ -202,8 +208,36 @@ export function computeGroups(list: Entry[], groupBy: GroupBy, ctx: InboxContext
     g.candidates.push(c);
   };
 
+  // Ticket mode (merge spec §5.1): Shortcut ticket primary, normalized-title
+  // fallback for ticketless candidates — but a title key only forms a group
+  // when ≥ 2 candidates share it (computed in a pre-pass), and such groups are
+  // visibly marked `· suggested` (the D1 heuristic marker). Everything else
+  // lands in Ungrouped.
+  const titleKeyCounts = new Map<string, number>();
+  if (groupBy === 'ticket') {
+    for (const c of list) {
+      if (ticketOf(c)) continue;
+      const k = normalizedTitleKey(titleOf(c));
+      if (k) titleKeyCounts.set(k, (titleKeyCounts.get(k) ?? 0) + 1);
+    }
+  }
+  const ticketSwatch: GroupSwatch = { variant: 'square', color: sourceMeta('shortcut').color };
+  const neutralSwatch: GroupSwatch = { variant: 'square', color: UNAFFILIATED };
+
   for (const c of list) {
-    if (groupBy === 'source') {
+    if (groupBy === 'ticket') {
+      const tid = ticketOf(c);
+      if (tid) {
+        push(`sc:${tid}`, `sc-${tid}`, ticketSwatch, c);
+      } else {
+        const k = normalizedTitleKey(titleOf(c));
+        if (k && (titleKeyCounts.get(k) ?? 0) >= 2) {
+          push(`t:${k}`, `${titleOf(c)} · suggested`, neutralSwatch, c);
+        } else {
+          push('__solo', 'Ungrouped', neutralSwatch, c);
+        }
+      }
+    } else if (groupBy === 'source') {
       const src = sourceOf(c);
       const m = sourceMeta(src);
       push(src || 'unknown', m.label, { variant: 'tile', color: m.color, glyph: m.glyph }, c);
@@ -231,7 +265,18 @@ export function computeGroups(list: Entry[], groupBy: GroupBy, ctx: InboxContext
   const groups = [...map.values()];
   groups.forEach(tallyGroup);
 
-  if (groupBy === 'source') {
+  if (groupBy === 'ticket') {
+    // Ticket groups get the story name when any member's Shortcut block
+    // yields one (the §1.4 header parse) — `sc-57886: <story name>`.
+    for (const g of groups) {
+      if (!g.key.startsWith('sc:')) continue;
+      const named = shortcutStoryTitle(g.candidates);
+      if (named) g.label = named;
+    }
+    // Size desc (the project-group idiom), Ungrouped pinned last.
+    const solo = (g: InboxGroup) => (g.key === '__solo' ? 1 : 0);
+    groups.sort((a, b) => solo(a) - solo(b) || b.candidates.length - a.candidates.length);
+  } else if (groupBy === 'source') {
     groups.sort((a, b) => sourceOrder(a.key) - sourceOrder(b.key) || a.label.localeCompare(b.label));
   } else if (groupBy === 'type') {
     groups.sort((a, b) => typeOrder(a.key) - typeOrder(b.key));
