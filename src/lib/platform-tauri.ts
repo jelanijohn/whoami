@@ -32,6 +32,7 @@ import type {
   Http,
   HttpRequest,
   HttpResponse,
+  OAuthConnect,
   Platform,
   Row,
   Secrets
@@ -109,6 +110,15 @@ const keyringSecrets: Secrets = {
   get: (key) => invoke<string | null>('secret_get', { key }),
   set: (key, value) => invoke<void>('secret_set', { key, value }),
   delete: (key) => invoke<void>('secret_delete', { key })
+};
+
+/**
+ * Interactive OAuth consent flows — the desktop-only seam. The Rust command
+ * (src-tauri/src/gmail_oauth.rs) runs the loopback+PKCE dance and stores the
+ * grant in the keyring; token refresh happens in the core over Http + Secrets.
+ */
+const tauriOAuth: OAuthConnect = {
+  connectGmail: () => invoke<string>('connect_gmail')
 };
 
 /** Split a multi-statement SQL script into individual statements. Our schema
@@ -254,6 +264,7 @@ export async function createTauriPlatform(recordRoot: string): Promise<Platform>
     http: tauriHttp,
     secrets: keyringSecrets,
     docs: tauriDocs,
+    oauth: tauriOAuth,
     openDatabase: (path: string) => TauriDatabase.openExternalReadOnly(path)
   };
 }

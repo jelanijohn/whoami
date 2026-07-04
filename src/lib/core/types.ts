@@ -196,6 +196,17 @@ export interface Llm {
   complete(req: LlmCompletionRequest): Promise<string>;
 }
 
+/** Interactive OAuth connect flows that need a native shell (a loopback
+ * listener for the redirect + the system browser for consent). Absent on Node
+ * ⇒ Connect is disabled with a clear message. Token REFRESH never uses this
+ * seam — it runs in the core over {@link Http} + {@link Secrets}
+ * (`ingest/gmail-oauth.ts`), so it stays unit-testable. */
+export interface OAuthConnect {
+  /** Run the Gmail desktop-loopback+PKCE consent flow; stores the grant via
+   * the platform keyring and resolves to the connected account's email. */
+  connectGmail(): Promise<string>;
+}
+
 /** A binary document parsed to plain text (résumé import spec §3). */
 export interface ExtractedDoc {
   text: string;
@@ -237,6 +248,9 @@ export interface Platform {
   /** Optional — present when binary document parsing is wired (résumé import
    * spec §3). Absent ⇒ résumé import is disabled with a clear message. */
   docs?: DocExtract;
+  /** Optional — interactive OAuth consent flows (Gmail). Present only on the
+   * desktop shell; absent ⇒ Connect is disabled with a clear message. */
+  oauth?: OAuthConnect;
   /** Optional — open an external SQLite file (an absolute path) **read-only**,
    * for importing another app's local database (Warp history import). The caller
    * is responsible for `close()`. Absent ⇒ that import is disabled with a clear

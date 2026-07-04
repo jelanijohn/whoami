@@ -9,7 +9,6 @@ export {
   isoDate,
   GITHUB_TOKEN_NAME,
   ASANA_TOKEN_NAME,
-  GMAIL_TOKEN_NAME,
   SHORTCUT_TOKEN_NAME,
   type IngestSource,
   type RawItem,
@@ -74,6 +73,19 @@ export {
   validateGmail,
   type GmailFetchOpts
 } from './gmail';
+export {
+  GMAIL_CLIENT_ID_NAME,
+  GMAIL_CLIENT_SECRET_NAME,
+  GMAIL_GRANT_NAME,
+  GMAIL_LEGACY_TOKEN_NAME,
+  parseGmailGrant,
+  grantIsFresh,
+  gmailExpiresAt,
+  readGmailGrant,
+  disconnectGmail,
+  gmailAccessToken,
+  type GmailGrant
+} from './gmail-oauth';
 export {
   GMAIL_QUERY_SYSTEM,
   buildGmailQueryPrompt,

@@ -52,7 +52,8 @@ src/lib/core/        Framework-agnostic TypeScript core (no Tauri, no browser).
   generators/          Resume (Markdown) + standalone site (HTML); private
                          excluded; wins nest under their role/project.
   platform-node.ts     Node-backed Platform (tests + future CLI).
-src/lib/platform-tauri.ts  Tauri-backed Platform (sql / fs / shell / http / keyring).
+src/lib/platform-tauri.ts  Tauri-backed Platform (sql / fs / shell / http /
+                        keyring / OAuth connect).
 src/lib/state.svelte.ts    Svelte 5 runes app state driving the UI.
 src/lib/{appearance,theme}.svelte.ts  Appearance + theme (dark mode) preferences.
 src/lib/journal/      Pure helpers for the Journal views: grouping, date
@@ -65,13 +66,15 @@ src/lib/components/   Titlebar, AppMenu, the collapsible candidate row, editor,
                         Journal views (Grouped · Timeline · Calendar · Table).
 src/routes/          SvelteKit SPA: Journal · Import · Inbox · Projects ·
                        Profile · Resume · Personal site · Data.
-src-tauri/           Rust shell: registers the fs/sql/shell/dialog/http plugins.
+src-tauri/           Rust shell: registers the fs/sql/shell/dialog/http/opener
+                       plugins + the Gmail OAuth consent command (gmail_oauth.rs).
 ```
 
 The core never imports Tauri. The Tauri frontend and the test harness each
 supply a `Platform` (filesystem, SQLite, git runner, hash, plus optional HTTP +
-keyring seams for ingest and the LLM, and a read-only external-SQLite seam used to
-read another app's database for Warp and NeuroSkill import) — so the storage and ingest logic is
+keyring seams for ingest and the LLM, a read-only external-SQLite seam used to
+read another app's database for Warp and NeuroSkill import, and a desktop-only
+OAuth-connect seam for the Gmail consent flow) — so the storage and ingest logic is
 fully unit-testable off-device, and a CLI could wrap the same core.
 
 ### How a record folder is used
@@ -118,7 +121,13 @@ explicit promote.**
   metadata-only (subjects & snippets, never bodies) and driven by a Gmail search
   query you can type by hand or have the LLM draft from a plain-English
   description ("unread from my manager this week") — the suggestion only fills
-  the editable query field; nothing is fetched until you run the import. The website importer fetches only the pages you enter (and a sitemap
+  the editable query field; nothing is fetched until you run the import. Gmail
+  auth is a one-time **Connect Gmail** consent flow (desktop loopback + PKCE)
+  against your own Google *Desktop* OAuth client — create one in Google Cloud
+  (enable the Gmail API, consent screen "In production", Desktop-app
+  credentials; the in-app help walks through it), paste its ID + secret once,
+  and the resulting read-only grant lives in the OS keyring with access tokens
+  refreshed automatically. The app ships no shared Google credentials. The website importer fetches only the pages you enter (and a sitemap
   you point at) — it is not a crawler — and treats the polished prose as a prompt
   to write the rawer truth underneath. The NeuroSkill importer reads past EEG
   sessions from another app's local SQLite (read-only, `eeg_timeseries` + `labels`

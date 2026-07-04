@@ -25,7 +25,8 @@ export type {
   Llm,
   LlmCompletionRequest,
   DocExtract,
-  ExtractedDoc
+  ExtractedDoc,
+  OAuthConnect
 } from './types';
 export { ENTRY_TYPES } from './types';
 

@@ -34,6 +34,18 @@ keyring = { version = "3.6", features = [
   "sync-secret-service",
   "crypto-rust",
 ] }
+# Gmail OAuth (desktop loopback + PKCE) is hand-rolled in gmail_oauth.rs — no
+# OAuth SDK, same as waid. Minimal, ubiquitous primitives: a localhost listener
+# for the redirect (tokio::net), SHA-256 + base64url for the PKCE challenge, OS
+# entropy for the verifier/state, reqwest for the token exchange, and the opener
+# plugin to launch the system browser for consent.
+tauri-plugin-opener = "2"
+tokio = { version = "1", features = ["net", "time", "io-util"] }
+sha2 = "0.10"
+base64 = "0.22"
+getrandom = "0.3"
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+chrono = { version = "0.4", features = ["clock"], default-features = false }
 
 [profile.release]
 codegen-units = 1

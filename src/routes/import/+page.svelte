@@ -7,7 +7,20 @@
   import Icon from '$lib/components/Icon.svelte';
 
   // Transient token-entry boxes (the saved value lives in the keyring, never here).
-  let tokens = $state<Record<TokenSource, string>>({ github: '', asana: '', gmail: '', shortcut: '' });
+  let tokens = $state<Record<TokenSource, string>>({ github: '', asana: '', shortcut: '' });
+
+  // Transient Gmail OAuth-client entry boxes (saved to the keyring, never here).
+  let gmailClientId = $state('');
+  let gmailClientSecret = $state('');
+  // Reveal the client inputs again after a client is already saved ("replace").
+  let gmailClientEditing = $state(false);
+
+  async function saveGmailClient() {
+    await app.saveGmailClient(gmailClientId, gmailClientSecret);
+    gmailClientId = '';
+    gmailClientSecret = '';
+    gmailClientEditing = false;
+  }
 
   // Per-source "Save as feed" label drafts (inline text inputs, spec §6.1).
   let feedLabels = $state<Record<string, string>>({});
@@ -870,11 +883,65 @@
               {:else if s.id === 'gmail'}
                 {#snippet gmailBody()}
                   <p class="text-xs text-[var(--color-muted)]">
-                    Metadata only — subjects &amp; snippets, never message bodies. Needs a Gmail
-                    <code>readonly</code> OAuth access token. The query is the selection, e.g.
+                    Metadata only — subjects &amp; snippets, never message bodies. Connect once with
+                    your own Google OAuth <em>Desktop</em> client (read-only scope); tokens refresh
+                    automatically after that. The query is the selection, e.g.
                     <code>in:sent after:2019/01/01 before:2020/01/01</code>.
                   </p>
-                  {@render tokenRow('gmail', 'OAuth access token (ya29.…)')}
+                  {#if !app.gmailClientSaved || gmailClientEditing}
+                    <div class="flex flex-wrap items-end gap-2">
+                      <label class="flex flex-col text-xs text-[var(--color-muted)]">
+                        Client ID (stored in OS keyring)
+                        <input bind:value={gmailClientId} placeholder="…apps.googleusercontent.com" class="{inputCls} w-72" />
+                      </label>
+                      <label class="flex flex-col text-xs text-[var(--color-muted)]">
+                        Client secret
+                        <input type="password" bind:value={gmailClientSecret} placeholder="GOCSPX-…" class="{inputCls} w-56" />
+                      </label>
+                      <CredentialHelp topic="gmail-client" />
+                      <button class={btnCls} disabled={app.busy || !gmailClientId.trim() || !gmailClientSecret.trim()} onclick={saveGmailClient}>
+                        Save client
+                      </button>
+                      {#if gmailClientEditing}
+                        <button class="text-xs text-[var(--color-muted)] hover:underline" onclick={() => (gmailClientEditing = false)}>
+                          cancel
+                        </button>
+                      {/if}
+                    </div>
+                  {:else}
+                    <div class="flex flex-wrap items-center gap-2 text-xs">
+                      <span class="text-green-700 dark:text-green-300">OAuth client saved</span>
+                      <button class="text-[var(--color-muted)] hover:underline" disabled={app.busy} onclick={() => (gmailClientEditing = true)}>
+                        replace
+                      </button>
+                      <button class="text-[var(--color-private)] hover:underline" disabled={app.busy} onclick={() => app.clearGmailClient()}>
+                        clear
+                      </button>
+                    </div>
+                  {/if}
+                  <div class="flex flex-wrap items-center gap-2">
+                    {#if app.tokenPresent.gmail}
+                      <span class="text-xs text-green-700 dark:text-green-300">
+                        Connected as {app.gmailAccount ?? 'unknown account'}
+                      </span>
+                      <button class={btnCls} disabled={app.busy} onclick={() => app.testSourceToken('gmail')}>
+                        Test
+                      </button>
+                      <button class="text-xs text-[var(--color-private)] hover:underline" disabled={app.busy} onclick={() => app.disconnectGmail()}>
+                        disconnect
+                      </button>
+                    {:else}
+                      <button class={btnCls} disabled={app.busy || !app.gmailClientSaved} onclick={() => app.connectGmail()}>
+                        Connect Gmail
+                      </button>
+                      <CredentialHelp topic="gmail" />
+                      {#if !app.gmailClientSaved}
+                        <span class="text-xs text-[var(--color-muted)]">Save your OAuth client first</span>
+                      {:else}
+                        <span class="text-xs text-[var(--color-muted)]">not connected</span>
+                      {/if}
+                    {/if}
+                  </div>
                   <div class="flex flex-wrap items-end gap-2">
                     <label class="flex flex-1 flex-col text-xs text-[var(--color-muted)]">
                       Search query
@@ -910,7 +977,7 @@
                     </p>
                   {/if}
                   <div class="flex flex-wrap items-center gap-2 border-t border-dashed border-[var(--color-line)] pt-3">
-                    <button class={runCls} disabled={app.busy || !app.importSettings.gmail.query.trim()} onclick={runGmail}>
+                    <button class={runCls} disabled={app.busy || !app.tokenPresent.gmail || !app.importSettings.gmail.query.trim()} onclick={runGmail}>
                       <Icon name="sync" size={17} />
                       Run Gmail import
                     </button>

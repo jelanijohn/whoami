@@ -56,8 +56,13 @@ import {
   type RefreshReport,
   GITHUB_TOKEN_NAME,
   ASANA_TOKEN_NAME,
-  GMAIL_TOKEN_NAME,
   SHORTCUT_TOKEN_NAME,
+  GMAIL_CLIENT_ID_NAME,
+  GMAIL_CLIENT_SECRET_NAME,
+  GMAIL_LEGACY_TOKEN_NAME,
+  gmailAccessToken,
+  readGmailGrant,
+  disconnectGmail,
   DEFAULT_SHORTCUT_REF,
   enrichRawItemsWithShortcut,
   fetchShortcutStories,
@@ -119,16 +124,15 @@ export type JournalGroupBy = 'project' | 'type' | 'month';
  * items — one keyring token serves both (story-import spec §3). */
 export type LiveSource = 'github' | 'asana' | 'shortcut' | 'gmail';
 
-/** Everything with a keyring token. Now identical to {@link LiveSource} (the
- * alias survives for the connection-settings surface, which predates Shortcut
- * becoming a source of its own). */
-export type TokenSource = LiveSource;
+/** The sources that authenticate with a single pasted keyring token. Gmail is
+ * a {@link LiveSource} but not a TokenSource: it authenticates with an OAuth
+ * grant (connect flow + auto-refresh — see `core/ingest/gmail-oauth.ts`). */
+export type TokenSource = Exclude<LiveSource, 'gmail'>;
 
 /** Keyring entry name per token holder — the token never leaves the keyring. */
 const TOKEN_NAMES: Record<TokenSource, string> = {
   github: GITHUB_TOKEN_NAME,
   asana: ASANA_TOKEN_NAME,
-  gmail: GMAIL_TOKEN_NAME,
   shortcut: SHORTCUT_TOKEN_NAME
 };
 
@@ -250,8 +254,13 @@ class AppState {
    * defaults to it. Transient on purpose — project slugs are record-specific, so
    * it is NOT persisted like {@link importSettings} and resets each session. */
   importProject = $state('');
-  /** Which live sources currently have a token in the keyring (TODO §2.1). */
+  /** Which live sources currently have a token in the keyring (TODO §2.1).
+   * Gmail's flag means "an OAuth grant is stored", not a pasted token. */
   tokenPresent = $state<Record<string, boolean>>({});
+  /** The connected Gmail address (from the stored OAuth grant), or null. */
+  gmailAccount = $state<string | null>(null);
+  /** Whether the user's Google OAuth client (id + secret) is saved. */
+  gmailClientSaved = $state(false);
   /** Asana projects fetched for the import picker (empty until "Load projects").
    * Transient — project gids are account-specific, so it is not persisted. */
   asanaProjects = $state<AsanaProject[]>([]);
@@ -900,11 +909,14 @@ class AppState {
     });
   }
 
-  /** Refresh which live sources have a token saved (drives the UI status). */
+  /** Refresh which live sources have credentials saved (drives the UI status).
+   * Pasted tokens for the {@link TokenSource}s; the OAuth grant for Gmail. */
   async refreshTokenPresence(): Promise<void> {
     const secrets = this.platform?.secrets;
     if (!secrets) {
       this.tokenPresent = {};
+      this.gmailAccount = null;
+      this.gmailClientSaved = false;
       return;
     }
     const out: Record<string, boolean> = {};
@@ -912,22 +924,84 @@ class AppState {
       const v = await secrets.get(TOKEN_NAMES[source]);
       out[source] = !!v && v.trim().length > 0;
     }
+    // A corrupt grant shouldn't brick the Import page — treat it as absent
+    // (reconnecting overwrites it).
+    const grant = await readGmailGrant(secrets).catch(() => null);
+    out.gmail = grant !== null;
+    this.gmailAccount = grant?.email ?? null;
+    this.gmailClientSaved = !!(await secrets.get(GMAIL_CLIENT_ID_NAME))?.trim();
     this.tokenPresent = out;
   }
 
   /** Cheap credential check against the provider (mirrors {@link testLlm}). */
-  async testSourceToken(source: TokenSource): Promise<void> {
+  async testSourceToken(source: LiveSource): Promise<void> {
     await this.guard(async () => {
       const http = this.platform?.http;
       const secrets = this.platform?.secrets;
       if (!http || !secrets) throw new Error('This platform has no network/secret support');
+      if (source === 'gmail') {
+        // Refreshes the grant if stale, then pings the API — proves the whole
+        // connect + refresh chain, not just a cached token.
+        await validateGmail(http, await gmailAccessToken(http, secrets));
+        this.message = 'gmail connection looks valid';
+        return;
+      }
       const token = await secrets.get(TOKEN_NAMES[source]);
       if (!token) throw new Error(`No ${source} token saved`);
       if (source === 'github') await validateGithub(http, token, this.importSettings.github.baseUrl || undefined);
       else if (source === 'asana') await validateAsana(http, token);
-      else if (source === 'shortcut') await validateShortcut(http, token);
-      else await validateGmail(http, token);
+      else await validateShortcut(http, token);
       this.message = `${source} token looks valid`;
+    });
+  }
+
+  /** Save (or replace) the user's own Google OAuth *Desktop* client. Keyring
+   * only, like every credential; kept across disconnects so reconnecting never
+   * means re-doing the Google Cloud setup. */
+  async saveGmailClient(clientId: string, clientSecret: string): Promise<void> {
+    await this.guard(async () => {
+      if (!this.platform?.secrets) throw new Error('No secret storage available on this platform');
+      const id = clientId.trim();
+      const secret = clientSecret.trim();
+      if (!id || !secret) throw new Error('Both the client ID and the client secret are required');
+      await this.platform.secrets.set(GMAIL_CLIENT_ID_NAME, id);
+      await this.platform.secrets.set(GMAIL_CLIENT_SECRET_NAME, secret);
+      await this.refreshTokenPresence();
+      this.message = 'Google OAuth client saved';
+    });
+  }
+
+  /** Remove the saved Google OAuth client (id + secret). */
+  async clearGmailClient(): Promise<void> {
+    await this.guard(async () => {
+      if (!this.platform?.secrets) throw new Error('No secret storage available on this platform');
+      await this.platform.secrets.delete(GMAIL_CLIENT_ID_NAME);
+      await this.platform.secrets.delete(GMAIL_CLIENT_SECRET_NAME);
+      await this.refreshTokenPresence();
+      this.message = 'Cleared Google OAuth client';
+    });
+  }
+
+  /** Run the interactive Gmail consent flow (desktop only). The Rust command
+   * stores the grant in the keyring; from then on imports auto-refresh. */
+  async connectGmail(): Promise<void> {
+    await this.guard(async () => {
+      if (!this.platform?.oauth) throw new Error('Connecting Gmail needs the desktop app');
+      const email = await this.platform.oauth.connectGmail();
+      // The pre-OAuth pasted token is obsolete — clear it so it can't linger.
+      await this.platform.secrets?.delete(GMAIL_LEGACY_TOKEN_NAME).catch(() => {});
+      await this.refreshTokenPresence();
+      this.message = `Gmail connected as ${email}`;
+    });
+  }
+
+  /** Drop the Gmail grant (keeps the OAuth client for easy reconnects). */
+  async disconnectGmail(): Promise<void> {
+    await this.guard(async () => {
+      if (!this.platform?.secrets) throw new Error('No secret storage available on this platform');
+      await disconnectGmail(this.platform.secrets);
+      await this.refreshTokenPresence();
+      this.message = 'Gmail disconnected';
     });
   }
 
@@ -1023,7 +1097,13 @@ class AppState {
       const http = this.platform?.http;
       const secrets = this.platform?.secrets;
       if (!http || !secrets) throw new Error('This platform has no network/secret support');
-      const token = await secrets.get(TOKEN_NAMES[source]);
+      // Gmail authenticates with the OAuth grant (auto-refreshed); the pasted
+      // keyring token for everything else — the one seam that knows Gmail is
+      // special, so fetchers and feeds never do (waid's resolve_connection_token).
+      const token =
+        source === 'gmail'
+          ? await gmailAccessToken(http, secrets)
+          : await secrets.get(TOKEN_NAMES[source]);
       if (!token) throw new Error(`No ${source} token saved — add one first`);
       const items = await fetcher(http, token);
       // Triage only the items a stage run would actually keep, so the LLM never

@@ -4,7 +4,8 @@
 // docs (opened in the system browser).
 //
 // Keys match the live-source ids used on the Import page (github/asana/gmail —
-// see LiveSource in src/lib/state.svelte.ts) plus `anthropic` for the LLM API
+// see LiveSource in src/lib/state.svelte.ts) plus `gmail-client` for the
+// bring-your-own Google OAuth client fields and `anthropic` for the LLM API
 // key field on the Data page. Scopes mirror what the ingest adapters actually
 // require.
 
@@ -42,16 +43,28 @@ export const credentialHelp: Record<string, CredentialHelp> = {
     docsUrl: 'https://developers.asana.com/docs/personal-access-token'
   },
   gmail: {
-    title: 'Gmail read-only OAuth access token',
+    title: 'Connect Gmail (read-only)',
     steps: [
-      'Open the Google OAuth 2.0 Playground (developers.google.com/oauthplayground).',
-      'In “Select & authorize APIs”, add the scope https://www.googleapis.com/auth/gmail.readonly.',
-      'Authorize with your Google account, then exchange the code for tokens.',
-      'Copy the “Access token” (starts with ya29.…) and paste it here.'
+      'Save your Google OAuth client (ID + secret) on this card first — one-time setup, see the help icon beside those fields.',
+      'Click “Connect Gmail”. Your browser opens a Google sign-in page.',
+      'Pick the account and approve read-only Gmail access.',
+      'Return to Who Am I — the connection is stored in your OS keyring and access tokens refresh automatically from then on.'
     ],
     scopes: ['gmail.readonly'],
-    note: 'This is a short-lived OAuth access token, not a password. Metadata-only — Who Am I reads subjects and snippets to build candidates, never full message bodies.',
+    note: 'Metadata-only — Who Am I reads subjects and snippets to build candidates, never full message bodies. Disconnect any time; revoking access in your Google account also invalidates the stored grant.',
     docsUrl: 'https://developers.google.com/gmail/api/auth/scopes'
+  },
+  'gmail-client': {
+    title: 'Your Google OAuth client (one-time setup)',
+    steps: [
+      'Go to console.cloud.google.com and create (or pick) a project.',
+      'APIs & Services → Library → enable the Gmail API.',
+      'APIs & Services → OAuth consent screen: set it up and set the publishing status to “In production” (in “Testing”, Google revokes the connection after 7 days).',
+      'APIs & Services → Credentials → Create credentials → OAuth client ID → application type “Desktop app”.',
+      'Copy the client ID and client secret and paste them here.'
+    ],
+    note: 'Who Am I ships no shared Google credentials — you bring your own Desktop OAuth client. Both values live only in your OS keyring. Desktop clients auto-allow loopback redirect URIs, so there is nothing to register.',
+    docsUrl: 'https://developers.google.com/identity/protocols/oauth2/native-app'
   },
   shortcut: {
     title: 'Shortcut API token',

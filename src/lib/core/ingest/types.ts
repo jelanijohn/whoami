@@ -74,10 +74,10 @@ export interface IngestReport {
 
 /** Keyring entry names for provider tokens (the {@link Secrets} seam, plan §1).
  * Like the Anthropic key, these NEVER touch the record repo or entry
- * frontmatter — only the OS keyring. Gmail's is an OAuth access token. */
+ * frontmatter — only the OS keyring. Gmail is not here: it uses an OAuth grant
+ * instead of a pasted token (see `gmail-oauth.ts`). */
 export const GITHUB_TOKEN_NAME = 'github.token';
 export const ASANA_TOKEN_NAME = 'asana.token';
-export const GMAIL_TOKEN_NAME = 'gmail.access_token';
 /** A Shortcut token grants COMPLETE account access — OS keyring only, exactly
  * like the others. One token serves both the Shortcut enrichment of GitHub
  * items (enriched candidates keep `source: 'github'`) AND the Shortcut story

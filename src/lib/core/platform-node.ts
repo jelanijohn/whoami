@@ -172,6 +172,9 @@ export function createNodePlatform(dbPath: string): Platform {
     joinPath: (...segments: string[]) => join(...segments),
     http: nodeHttp,
     secrets: new EnvSecrets(),
+    // `oauth` deliberately absent: the interactive consent flow needs a native
+    // shell (loopback listener + system browser); Node callers get a clear
+    // "needs the desktop app" message instead.
     docs: nodeDocs,
     async openDatabase(path: string) {
       return new NodeDatabase(path, { readonly: true });
