@@ -184,7 +184,12 @@
     app.savePrefs();
     onFilter();
   }
+  function onWindowKeydown(e: KeyboardEvent) {
+    if ((mode === 'new' || editing) && e.key === 'Escape') done();
+  }
 </script>
+
+<svelte:window onkeydown={onWindowKeydown} />
 
 <div>
   <!-- Header -->
@@ -233,15 +238,29 @@
   <!-- Filter / sort bar -->
   <JournalFilterBar onfilter={onFilter} onExpandAll={expandAll} onCollapseAll={collapseAll} {onGroupByChange} />
 
-  <!-- Inline editor (add new, or edit an existing entry) -->
-  {#if mode === 'new'}
-    <div class="mt-4"><EntryEditor entry={null} ondone={done} /></div>
-  {:else if editing}
-    <!-- Key by id so picking a different row's Edit remounts with fresh data
-         (EntryEditor snapshots `entry` on init). -->
-    {#key editing.frontmatter.id}
-      <div class="mt-4"><EntryEditor entry={editing} ondone={done} /></div>
-    {/key}
+  <!-- Editor overlay (add new, or edit an existing entry) -->
+  {#if mode === 'new' || editing}
+    <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+    <div
+      class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      role="presentation"
+      onclick={(e) => {
+        if (e.target === e.currentTarget) done();
+      }}
+    >
+      <div
+        class="max-h-[85vh] w-full max-w-2xl overflow-y-auto"
+        role="dialog"
+        aria-modal="true"
+        aria-label={editing ? 'Edit entry' : 'New entry'}
+      >
+        <!-- Key by id so picking a different row's Edit remounts with fresh data
+             (EntryEditor snapshots `entry` on init). -->
+        {#key editing?.frontmatter.id ?? '__new__'}
+          <EntryEditor entry={editing} ondone={done} />
+        {/key}
+      </div>
+    </div>
   {/if}
 
   <!-- Bulk-action bar (visible in select mode once something is picked) -->
