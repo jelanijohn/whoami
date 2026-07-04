@@ -308,6 +308,10 @@
     mergeOpen || mergeResolving ? mergedTags(mergeCandidates, bulkTags) : []
   );
   const mergeDateOk = $derived(isoOk(mergeDate));
+  // The privacy the merged entry will carry — buildMergedEntry's most-protective
+  // fold: private while ANY constituent is private. Changed via the row/bulk
+  // privacy toggles, not in the dialog, so the flag lives on the files.
+  const mergePrivate = $derived(mergeCandidates.some((c) => c.frontmatter.private === true));
   // The dialog's project select may carry a shared suggestion that isn't a
   // project yet — shown like CandidateRow's "(suggested)" orphan option.
   const mergeProjectOrphan = $derived(
@@ -556,6 +560,14 @@
     if (items.length === 0) return;
     clearSelection();
     await beginPromote(items);
+  }
+  // Rewrite the `private` flag on every selected candidate file — the choice
+  // sticks to the items, so a later promote (single, bulk or merge) carries it.
+  // The selection is kept: mark-then-promote is the expected sequence.
+  async function setSelectedPrivate(isPrivate: boolean) {
+    const paths = [...selected].filter((p) => byPath.has(p));
+    if (paths.length === 0) return;
+    await app.setCandidatesPrivate(paths, isPrivate);
   }
   async function rejectSelected() {
     const paths = [...selected].filter((p) => byPath.has(p));
@@ -860,6 +872,24 @@
             <span class="text-[13px] font-[650] text-[#2a3a7a]">{selectedCount} selected</span>
             <button onclick={clearSelection} class="text-[12px] text-[#7a86b8]">Clear</button>
             <div class="ml-auto flex flex-wrap items-center gap-[9px]">
+              <button
+                onclick={() => void setSelectedPrivate(true)}
+                disabled={app.busy}
+                title="The selected items will enter the record as private (excluded from resume & site)"
+                class="inline-flex h-8 items-center gap-1.5 rounded-lg border bg-white px-3 text-[12px] font-semibold text-[var(--color-private)] disabled:opacity-50"
+                style="border-color:#c8d2f3"
+              >
+                <Icon name="lock" size={13} /> Private
+              </button>
+              <button
+                onclick={() => void setSelectedPrivate(false)}
+                disabled={app.busy}
+                title="The selected items will enter the record as public"
+                class="inline-flex h-8 items-center gap-1.5 rounded-lg border bg-white px-3 text-[12px] font-semibold text-[#2a3a7a] disabled:opacity-50"
+                style="border-color:#c8d2f3"
+              >
+                <Icon name="lock_open" size={13} /> Public
+              </button>
               <span class="text-[11px] uppercase tracking-[0.04em] text-[#7a86b8]">Project</span>
               <select
                 bind:value={bulkProject}
@@ -1091,6 +1121,7 @@
                       onprojectchange={setItemProject}
                       ondatechange={setItemDate}
                       onparentclear={clearItemParent}
+                      onprivatechange={(p, priv) => void app.setCandidatesPrivate([p], priv)}
                       onpromote={(p, proj, d, par) => void promote(p, proj, d, par)}
                       onreject={(p, t) => void reject(p, t)}
                     />
@@ -1304,6 +1335,20 @@
           </button>
         </p>
       {/if}
+
+      <p class="m-0 flex items-center gap-1.5 text-[11.5px] text-[var(--color-muted)]">
+        <span class="shrink-0" style={mergePrivate ? 'color:var(--color-private)' : ''}>
+          <Icon name={mergePrivate ? 'lock' : 'lock_open'} size={14} />
+        </span>
+        <span>
+          {#if mergePrivate}
+            The merged entry will be <strong>private</strong> — at least one constituent is marked
+            private. Use the inbox privacy toggles to make them public first.
+          {:else}
+            The merged entry will be <strong>public</strong>.
+          {/if}
+        </span>
+      </p>
 
       {#if mergeTags.length}
         <!-- Read-only tag preview — the constituents' tags unioned with the bulk

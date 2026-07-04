@@ -20,6 +20,7 @@
     onprojectchange,
     ondatechange,
     onparentclear,
+    onprivatechange,
     onpromote,
     onreject
   }: {
@@ -46,6 +47,9 @@
     onprojectchange: (path: string, slug: string) => void;
     ondatechange: (path: string, date: string) => void;
     onparentclear?: (path: string) => void;
+    /** Flip whether this candidate will enter the record private (staged
+     * private-by-default; the flag is rewritten on the candidate file). */
+    onprivatechange: (path: string, isPrivate: boolean) => void;
     onpromote: (path: string, project: string, date: string, parent: string) => void;
     onreject: (path: string, title: string) => void;
   } = $props();
@@ -71,6 +75,10 @@
   // an option so the picker can keep the suggestion as the promote value.
   const suggested = $derived(typeof fm.project === 'string' ? fm.project : '');
   const suggestedOrphan = $derived(suggested !== '' && !projects.some((p) => p.slug === suggested));
+
+  // Whether promoting this row lands a private entry (candidates stage
+  // private-by-default; the toggle rewrites the flag on the staged file).
+  const isPrivate = $derived(fm.private === true);
 
   // Needs-date gating (allow-undated spec §E.2). Belt and suspenders: trust the
   // marker or an empty/invalid date.
@@ -173,6 +181,24 @@
       >{relativeDate(String(fm.date))}</span
     >
   {/if}
+
+  <!-- Privacy toggle: what this row promotes as -->
+  <button
+    type="button"
+    title={isPrivate
+      ? 'Will promote as private — click to make it public'
+      : 'Will promote as public — click to make it private'}
+    aria-label="Promote “{title}” as {isPrivate ? 'public' : 'private'}"
+    aria-pressed={isPrivate}
+    disabled={busy}
+    onclick={stop(() => onprivatechange(path, !isPrivate))}
+    class="grid size-7 shrink-0 place-items-center rounded-[7px] disabled:opacity-50"
+    style={isPrivate
+      ? 'background:rgba(181,71,8,0.08);color:var(--color-private);'
+      : 'color:var(--jv-chevron);'}
+  >
+    <Icon name={isPrivate ? 'lock' : 'lock_open'} size={15} />
+  </button>
 
   <!-- Quick promote -->
   <button

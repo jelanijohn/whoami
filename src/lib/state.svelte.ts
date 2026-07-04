@@ -714,6 +714,21 @@ class AppState {
     );
   }
 
+  /** Flip the `private` flag on staged candidates — the inbox counterpart of
+   * {@link bulkSetPrivate}. Rewrites the candidate files in place so the
+   * choice persists across sessions and promote carries it into the record. */
+  async setCandidatesPrivate(paths: string[], isPrivate: boolean): Promise<number> {
+    if (!this.store || paths.length === 0) return 0;
+    return (
+      (await this.guard(async () => {
+        const updated = await this.store!.setCandidatesPrivate(paths, isPrivate);
+        this.candidates = await this.store!.listCandidates();
+        this.message = `${updated} candidate${updated === 1 ? '' : 's'} will promote as ${isPrivate ? 'private' : 'public'}`;
+        return updated;
+      })) ?? 0
+    );
+  }
+
   /** Reject a candidate: remembered so it is never re-proposed (plan §1). */
   async rejectCandidate(candidatePath: string, title = ''): Promise<void> {
     if (!this.store) return;

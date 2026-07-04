@@ -18,6 +18,9 @@
   let type = $state(fm?.type ?? 'journal');
   let title = $state(fm?.title ?? '');
   let date = $state(fm?.date ?? new Date().toISOString().slice(0, 10));
+  // `end` is the canonical key the generators read; `ended` is a legacy alias
+  // we seed from (and migrate away from) on save. Empty = ongoing.
+  let end = $state(s('end') || s('ended'));
   let isPrivate = $state(fm?.private ?? false);
   let tagsText = $state(Array.isArray(fm?.tags) ? (fm!.tags as string[]).join(', ') : '');
   let org = $state(s('org'));
@@ -32,6 +35,8 @@
   let project = $state(s('project'));
 
   const showOrg = $derived(['role', 'project', 'win', 'education'].includes(type));
+  // Types with a duration: `date` is the start, optional `end` closes the range.
+  const showEnd = $derived(['role', 'project', 'education'].includes(type));
   const showRole = $derived(type === 'role');
   const showMention = $derived(type === 'mention');
   const showLinks = $derived(['project', 'role', 'mention', 'milestone'].includes(type));
@@ -54,6 +59,7 @@
   function buildExtra(): Record<string, unknown> {
     const extra: Record<string, unknown> = {};
     if (showOrg && org) extra.org = org;
+    if (showEnd && end) extra.end = end;
     if (showRole && role) extra.role = role;
     if (showMention) {
       if (source) extra.source = source;
@@ -98,6 +104,12 @@
       // `buildExtra` only ever *adds* `project`. When the picker is shown but
       // left empty, explicitly clear any prior affiliation.
       if (showProject && !project) delete next.frontmatter.project;
+      // Clearing the end date makes the entry ongoing again; drop the legacy
+      // `ended` alias we seeded from so it can't shadow the edited value.
+      if (showEnd) {
+        if (!end) delete next.frontmatter.end;
+        delete next.frontmatter.ended;
+      }
       await app.updateEntry(next);
     }
     if (!app.error) ondone();
@@ -115,9 +127,15 @@
       </select>
     </label>
     <label class="flex flex-col text-xs font-medium text-[var(--color-muted)]">
-      Date
+      {showEnd ? 'Start date' : 'Date'}
       <input type="date" bind:value={date} class="mt-1 rounded border border-[var(--color-line)] px-2 py-1 text-sm" use:closeDatePicker />
     </label>
+    {#if showEnd}
+      <label class="flex flex-col text-xs font-medium text-[var(--color-muted)]">
+        End date (blank = ongoing)
+        <input type="date" bind:value={end} class="mt-1 rounded border border-[var(--color-line)] px-2 py-1 text-sm" use:closeDatePicker />
+      </label>
+    {/if}
     <label class="mt-5 flex items-center gap-2 text-sm text-[var(--color-private)]">
       <input type="checkbox" bind:checked={isPrivate} />
       Private (never in resume/site)

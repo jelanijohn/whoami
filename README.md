@@ -126,7 +126,11 @@ explicit promote.**
   peak-focus window — always private and prefilter-only, with short calibration
   blips flagged frivolous. An item that arrives without a real date is
   staged as *needs-date*: you set its date in the inbox before promoting — the app
-  never silently defaults it to today (brutal accuracy).
+  never silently defaults it to today (brutal accuracy). Candidates stage
+  **private-by-default**; a lock toggle on each inbox row (plus a bulk
+  Private/Public action on the selection) flips what an item will enter the
+  record as before you promote — the flag is written onto the staged file, so
+  the choice persists and a merge stays private while any constituent is.
 - **Triage** (`src/lib/core/triage/`) — a deterministic prefilter that always
   runs, plus an optional LLM pass, annotates each candidate with a
   `keep | frivolous` sort signal. It only sorts: never deletes, hides, or

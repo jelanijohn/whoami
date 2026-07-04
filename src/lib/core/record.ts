@@ -430,6 +430,28 @@ export class RecordStore {
   }
 
   /**
+   * Flip the `private` flag on staged candidates in place. Candidates stage
+   * private-by-default (pipeline); this is the human's pre-promote override —
+   * promote carries the flag verbatim into the record, and merge folds it
+   * most-protectively. Inbox files only: never touches the record or the
+   * index. Skips candidates already in the requested state; returns the
+   * number rewritten.
+   */
+  async setCandidatesPrivate(candidatePaths: string[], isPrivate: boolean): Promise<number> {
+    let updated = 0;
+    for (const p of candidatePaths) {
+      if (!p.startsWith(`${INBOX_DIR}/`)) {
+        throw new Error(`Only inbox candidates can be toggled — not "${p}".`);
+      }
+      const c = await this.readEntryFile(p);
+      if (c.frontmatter.private === isPrivate) continue;
+      await this.writeEntryFile({ ...c, frontmatter: { ...c.frontmatter, private: isPrivate } });
+      updated++;
+    }
+    return updated;
+  }
+
+  /**
    * Enrich staged candidates from Shortcut in place (shortcut-enrichment spec
    * §6, the backfill path). Re-extracts refs from each candidate's title + body
    * (NOT only frontmatter — pre-feature candidates have no `shortcut_ids` key

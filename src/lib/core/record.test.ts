@@ -357,6 +357,34 @@ describe('project dimension (plan §2)', () => {
     expect(await store.relabelCandidateProject('', 'x')).toBe(0);
     expect(await store.relabelCandidateProject('new', 'new')).toBe(0);
   });
+
+  it('setCandidatesPrivate flips staged candidates and promote carries the flag', async () => {
+    const candidate = makeEntry({
+      type: 'journal',
+      title: 'Shipped it',
+      date: '2024-05-01',
+      private: true, // staged private-by-default, as the ingest pipeline does
+      extra: { source: 'github', source_id: 'gh-priv-1' }
+    });
+    const staged = await store.stageCandidate(candidate);
+
+    // Flip to public; a second call in the same state rewrites nothing.
+    expect(await store.setCandidatesPrivate([staged.path!], false)).toBe(1);
+    expect(await store.setCandidatesPrivate([staged.path!], false)).toBe(0);
+    const [after] = await store.listCandidates();
+    expect(after.frontmatter.private).toBe(false);
+
+    // Promote preserves the human's choice — the entry enters the record public.
+    const promoted = await store.promoteCandidate(after.path!);
+    expect(promoted.frontmatter.private).toBe(false);
+    const onDisk = await store.readEntryFile(promoted.path!);
+    expect(onDisk.frontmatter.private).toBe(false);
+
+    // Guard: only inbox files may be toggled.
+    await expect(store.setCandidatesPrivate([promoted.path!], true)).rejects.toThrow(
+      /Only inbox candidates/
+    );
+  });
 });
 
 describe('reject log carries a learnable title (triage refinement)', () => {
