@@ -678,12 +678,17 @@ class AppState {
    * picker shows the new project immediately. Returns the new project's slug, or
    * null if creation failed.
    */
-  async createProjectFromCandidate(name: string, oldSlug: string): Promise<string | null> {
+  async createProjectFromCandidate(
+    name: string,
+    oldSlug: string,
+    moveOthers = true
+  ): Promise<string | null> {
     if (!this.store) return null;
     return this.guard(async () => {
       const project = await this.store!.createEntry({ type: 'project', title: name.trim() });
       const newSlug = typeof project.frontmatter.slug === 'string' ? project.frontmatter.slug : '';
-      const moved = newSlug ? await this.store!.relabelCandidateProject(oldSlug, newSlug) : 0;
+      const moved =
+        moveOthers && newSlug ? await this.store!.relabelCandidateProject(oldSlug, newSlug) : 0;
       this.candidates = await this.store!.listCandidates();
       await this.refresh();
       this.message =
@@ -691,6 +696,21 @@ class AppState {
         (moved ? ` · moved ${moved} other inbox item${moved === 1 ? '' : 's'} to it` : '');
       return newSlug;
     });
+  }
+
+  /** Relabel every staged candidate on `fromSlug` to `toSlug` — the promote
+   * gate's "also move the rest of the inbox" option when filing an orphan slug
+   * under an existing project. Quiet on the toast: the promote that follows
+   * immediately sets its own message. Returns the number moved. */
+  async relabelCandidates(fromSlug: string, toSlug: string): Promise<number> {
+    if (!this.store || !fromSlug || !toSlug || fromSlug === toSlug) return 0;
+    return (
+      (await this.guard(async () => {
+        const moved = await this.store!.relabelCandidateProject(fromSlug, toSlug);
+        if (moved) this.candidates = await this.store!.listCandidates();
+        return moved;
+      })) ?? 0
+    );
   }
 
   /** Reject a candidate: remembered so it is never re-proposed (plan §1). */

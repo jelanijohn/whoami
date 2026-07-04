@@ -430,6 +430,9 @@
   let resolutions = new Map<string, string>();
   let newProjectName = $state('');
   let existingProject = $state('');
+  // Whether resolving this slug also relabels the OTHER staged candidates
+  // still carrying it, so the rest of the inbox follows in one pass.
+  let moveOthers = $state(true);
   const currentSlug = $derived(unresolved[0] ?? null);
 
   async function beginPromote(items: PromoteItem[]) {
@@ -449,6 +452,7 @@
   function primeDialog() {
     newProjectName = currentSlug ? humanizeSlug(currentSlug) : '';
     existingProject = '';
+    moveOthers = true;
   }
   function humanizeSlug(slug: string): string {
     return slug
@@ -498,12 +502,13 @@
   }
   async function resolveCreate() {
     if (!currentSlug || !newProjectName.trim()) return;
-    const newSlug = await app.createProjectFromCandidate(newProjectName, currentSlug);
+    const newSlug = await app.createProjectFromCandidate(newProjectName, currentSlug, moveOthers);
     resolutions.set(currentSlug, newSlug || currentSlug);
     advance();
   }
-  function resolveExisting() {
+  async function resolveExisting() {
     if (!currentSlug || !existingProject) return;
+    if (moveOthers) await app.relabelCandidates(currentSlug, existingProject);
     resolutions.set(currentSlug, existingProject);
     advance();
   }
@@ -633,6 +638,13 @@
               >
             {/if}
           </button>
+          {#if filtersActive}
+            <button
+              onclick={clearFilters}
+              title="Reset search, chips, project and status filters"
+              class="bg-transparent px-1 text-[12px] text-[var(--color-private)]">Clear</button
+            >
+          {/if}
           <div class="ml-auto flex flex-wrap items-center gap-2">
             {#if app.llmReady}
               <input
@@ -1168,11 +1180,18 @@
         {:else}
           Enter a name to create the project.
         {/if}
-        {#if affectedOthers}
-          · {affectedOthers} other inbox item{affectedOthers === 1 ? '' : 's'} on
-          <code class="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/10">{currentSlug}</code> will move to it.
-        {/if}
       </p>
+
+      {#if affectedOthers}
+        <label class="flex items-start gap-2 text-xs text-[var(--color-muted)]">
+          <input type="checkbox" bind:checked={moveOthers} class="mt-0.5 accent-[var(--color-accent)]" />
+          <span>
+            Also move the {affectedOthers} other inbox item{affectedOthers === 1 ? '' : 's'} on
+            <code class="rounded bg-gray-100 px-1 py-0.5 dark:bg-white/10">{currentSlug}</code>
+            to the chosen project.
+          </span>
+        </label>
+      {/if}
 
       <div class="flex flex-wrap items-center justify-end gap-2 pt-1">
         <button
