@@ -34,7 +34,7 @@
 
 import type { Http } from '../types';
 import { slugify } from '../ids';
-import { bearer, getJson } from './http';
+import { bearer, getJson, httpFailureMessage } from './http';
 import { asStr, get, isoDate, type RawItem } from './types';
 
 const BASE = 'https://app.asana.com/api/1.0';
@@ -238,7 +238,7 @@ async function searchPage(http: Http, url: string, token: string): Promise<unkno
   if (resp.status === 401 || resp.status === 403) {
     throw new Error('Asana rejected the credentials — check the connection settings.');
   }
-  if (!resp.ok) throw new Error(`Asana returned ${resp.status}: ${resp.text.slice(0, 200)}`);
+  if (!resp.ok) throw new Error(httpFailureMessage('Asana', resp));
   try {
     return JSON.parse(resp.text) as unknown;
   } catch (e) {

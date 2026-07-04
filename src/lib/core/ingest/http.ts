@@ -4,7 +4,25 @@
  * clear credentials message on 401/403.
  */
 
-import type { Http } from '../types';
+import type { Http, HttpResponse } from '../types';
+
+/**
+ * Human-readable failure line for a non-2xx response. Providers serve their
+ * 5xx pages as HTML (GitHub's 504 "unicorn" page, say) and 200 chars of
+ * markup tells the user nothing, so an HTML body is dropped. A 502/504 is a
+ * server-side timeout — for GitHub GraphQL that usually means the query was
+ * too expensive (e.g. a commit history over a very wide date range) — so it
+ * gets a plain-language hint instead of a body.
+ */
+export function httpFailureMessage(provider: string, resp: HttpResponse): string {
+  if (resp.status === 502 || resp.status === 504) {
+    return `${provider} returned ${resp.status} — the server timed out. Try again, or narrow the import (smaller date range or limit).`;
+  }
+  const contentType = resp.headers['content-type'] ?? resp.headers['Content-Type'] ?? '';
+  const looksHtml = /text\/html/i.test(contentType) || /^\s*(<!doctype|<html)/i.test(resp.text);
+  if (looksHtml) return `${provider} returned ${resp.status} (HTML error page)`;
+  return `${provider} returned ${resp.status}: ${resp.text.slice(0, 200)}`;
+}
 
 export async function getJson(
   http: Http,
@@ -17,7 +35,7 @@ export async function getJson(
     throw new Error(`${provider} rejected the credentials — check the connection settings.`);
   }
   if (!resp.ok) {
-    throw new Error(`${provider} returned ${resp.status}: ${resp.text.slice(0, 200)}`);
+    throw new Error(httpFailureMessage(provider, resp));
   }
   try {
     return JSON.parse(resp.text) as unknown;
@@ -46,7 +64,7 @@ export async function postJson(
     throw new Error(`${provider} rejected the credentials — check the connection settings.`);
   }
   if (!resp.ok) {
-    throw new Error(`${provider} returned ${resp.status}: ${resp.text.slice(0, 200)}`);
+    throw new Error(httpFailureMessage(provider, resp));
   }
   try {
     return JSON.parse(resp.text) as unknown;

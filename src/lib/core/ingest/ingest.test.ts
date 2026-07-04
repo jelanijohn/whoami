@@ -19,6 +19,7 @@ import {
   fetchGithub
 } from './github';
 import type { Http, HttpRequest, HttpResponse } from '../types';
+import { httpFailureMessage } from './http';
 import {
   mapAsanaTask,
   taskInvolvesMe,
@@ -1428,5 +1429,43 @@ describe('staging pipeline', () => {
 
   it('keeps the inbox out of version control', () => {
     expect(RECORD_GITIGNORE).toContain('.inbox/');
+  });
+});
+
+// --- httpFailureMessage (shared non-2xx error line) --------------------------
+
+describe('httpFailureMessage', () => {
+  const resp = (over: Partial<HttpResponse>): HttpResponse => ({
+    status: 500,
+    ok: false,
+    headers: {},
+    text: '',
+    ...over
+  });
+
+  it('turns a 504 with an HTML body into a timeout hint, no markup', () => {
+    const msg = httpFailureMessage(
+      'GitHub',
+      resp({ status: 504, text: '<!DOCTYPE html>\n<!--\n\nHello future GitHubber!' })
+    );
+    expect(msg).toContain('GitHub returned 504');
+    expect(msg).toContain('timed out');
+    expect(msg).not.toContain('<');
+  });
+
+  it('treats 502 as a timeout too', () => {
+    expect(httpFailureMessage('GitHub', resp({ status: 502 }))).toContain('timed out');
+  });
+
+  it('drops an HTML body on other statuses (content-type or sniffed)', () => {
+    const byType = resp({ headers: { 'content-type': 'text/html; charset=utf-8' }, text: 'oops' });
+    expect(httpFailureMessage('GitHub', byType)).toBe('GitHub returned 500 (HTML error page)');
+    const sniffed = resp({ text: '  <html><body>oops</body></html>' });
+    expect(httpFailureMessage('GitHub', sniffed)).toBe('GitHub returned 500 (HTML error page)');
+  });
+
+  it('keeps a non-HTML body, truncated to 200 chars', () => {
+    const msg = httpFailureMessage('Asana', resp({ status: 429, text: 'x'.repeat(500) }));
+    expect(msg).toBe(`Asana returned 429: ${'x'.repeat(200)}`);
   });
 });
