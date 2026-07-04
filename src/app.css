@@ -75,6 +75,10 @@
   --imp-ok-bg: #f3f9f5; /* last-refresh card surface */
   --imp-ok-border: #cfe0d6;
   --imp-tile-bg: #f4f4f0; /* source row icon-tile background */
+
+  /* Ingest source accents that need a dark variant (brand hexes too dark for
+     the dark paper). Referenced from $lib/inbox/theme SOURCE_META. */
+  --src-github: #24292f;
 }
 
 :root.dark {
@@ -119,6 +123,9 @@
   --imp-ok-bg: #14241d;
   --imp-ok-border: #244a3a;
   --imp-tile-bg: #26272c;
+
+  /* Ingest source accents — dark variants. */
+  --src-github: #9aa4ae;
 }
 
 /* Expansion entrance from the prototype; chevron rotation lives inline.

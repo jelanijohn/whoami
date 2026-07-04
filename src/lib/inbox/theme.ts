@@ -6,6 +6,8 @@
  * Source colors are literal brand hexes — they have no semantic `--color-*`
  * token and read the same in light/dark, mirroring the Import dashboard's
  * per-source accents. Alpha-composited tints go through {@link alpha}.
+ * Exception: GitHub's brand hex is near-black, so it goes through the
+ * `--src-github` token (app.css), which lightens under `:root.dark`.
  */
 
 import { alpha } from '$lib/journal/theme';
@@ -16,7 +18,8 @@ export { typeMeta, typeOrder, TYPE_META } from '$lib/journal/theme';
 export interface SourceMeta {
   /** Display label for badges, chips, and group headers. */
   label: string;
-  /** Brand color (literal hex — no dark variant needed for these accents). */
+  /** Brand color — a literal hex, or a `var(--src-*)` token when the brand
+   * hex is too dark to read on the dark paper (see app.css). */
   color: string;
   /** `Icon` glyph name (see `$lib/components/Icon.svelte`). */
   glyph: string;
@@ -25,7 +28,7 @@ export interface SourceMeta {
 /** Known ingest sources, in canonical display order. Unknown source strings
  * fall back to a neutral gray + generic glyph via {@link sourceMeta}. */
 export const SOURCE_META: Record<string, SourceMeta> = {
-  github: { label: 'GitHub', color: '#24292f', glyph: 'code' },
+  github: { label: 'GitHub', color: 'var(--src-github)', glyph: 'code' },
   shortcut: { label: 'Shortcut', color: '#6552d0', glyph: 'bookmarks' },
   gmail: { label: 'Gmail', color: '#c5331f', glyph: 'mail' },
   calendar: { label: 'Calendar', color: '#1a73e8', glyph: 'event' },

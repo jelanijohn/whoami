@@ -6,7 +6,9 @@
  *   - NEVER calls an LLM — Stage 1 is fully deterministic.
  *   - Dedupes against (in order) the provenance index (already promoted), the
  *     rejected list (human said no), and the inbox itself (deterministic
- *     candidate filenames make re-staging idempotent).
+ *     candidate filenames make re-staging idempotent). Items carrying
+ *     `supersededBy` ids (e.g. a commit's associated PRs) are additionally
+ *     skipped when any of those ids is already handled in any of the three.
  *
  * Every candidate is created `private: true` by default — ingested material
  * defaults to the most protective posture and only a deliberate human edit
@@ -83,6 +85,7 @@ interface Selection {
   fresh: RawItem[];
   skippedPromoted: number;
   skippedRejected: number;
+  skippedSuperseded: number;
 }
 
 /** Categorize a batch against the record (already promoted) and the rejected
@@ -95,9 +98,15 @@ async function categorize(store: RecordStore, items: RawItem[]): Promise<Selecti
   for (const source of new Set(items.map((i) => String(i.source)))) {
     promotedBySource.set(source, await store.promotedSourceIds(source));
   }
+  // The inbox scan is only needed for the superseded check — load it lazily so
+  // every batch without `supersededBy` hints (all of today's non-commit paths)
+  // pays nothing.
+  const needsStaged = items.some((i) => (i.supersededBy?.length ?? 0) > 0);
+  const staged = needsStaged ? await store.candidateKeys() : new Set<string>();
   const fresh: RawItem[] = [];
   let skippedPromoted = 0;
   let skippedRejected = 0;
+  let skippedSuperseded = 0;
   for (const item of items) {
     const source = String(item.source);
     if (item.sourceId && promotedBySource.get(source)?.has(item.sourceId)) {
@@ -108,9 +117,25 @@ async function categorize(store: RecordStore, items: RawItem[]): Promise<Selecti
       skippedRejected++;
       continue;
     }
+    // Superseded (e.g. a commit whose associated PR is already handled). NOTE:
+    // promoted ids are bare decimal databaseIds with no type, so an issue id
+    // could in principle coincide with a PR id — accepted as vanishingly rare
+    // (one falsely skipped commit); the excludePrCommits toggle is the escape
+    // hatch.
+    if (
+      item.supersededBy?.some(
+        (id) =>
+          promotedBySource.get(source)?.has(id) ||
+          rejected.has(provenanceKey(source, id)) ||
+          staged.has(provenanceKey(source, id))
+      )
+    ) {
+      skippedSuperseded++;
+      continue;
+    }
     fresh.push(item);
   }
-  return { fresh, skippedPromoted, skippedRejected };
+  return { fresh, skippedPromoted, skippedRejected, skippedSuperseded };
 }
 
 /**
@@ -147,12 +172,13 @@ export async function stageItems(
   opts: { signals?: Map<string, TriageResult>; private?: boolean; project?: string } = {}
 ): Promise<IngestReport> {
   const priv = opts.private ?? true;
-  const { fresh, skippedPromoted, skippedRejected } = await categorize(store, items);
+  const { fresh, skippedPromoted, skippedRejected, skippedSuperseded } = await categorize(store, items);
   const report: IngestReport = {
     fetched: items.length,
     staged: 0,
     skippedPromoted,
     skippedRejected,
+    skippedSuperseded,
     errors: []
   };
 

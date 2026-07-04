@@ -6,6 +6,7 @@ import {
   buildMergedEntry,
   mergedTitleDefault,
   mergeLedger,
+  mergedTags,
   normalizedTitleKey,
   ticketOf
 } from './merge';
@@ -286,6 +287,18 @@ describe('buildMergedEntry (spec §1.3)', () => {
     expect(cleared.frontmatter.project).toBeUndefined();
     const overridden = buildMergedEntry(candidates, { title: 'x', project: 'client-site' });
     expect(overridden.frontmatter.project).toBe('client-site');
+  });
+
+  it('mergedTags previews the exact fold buildMergedEntry applies', () => {
+    const candidates = ticketCommits(2, () => '');
+    // Duplicates and blanks in the overrides dedupe/drop; constituents first.
+    const preview = mergedTags(candidates, ['banner', 'github', ' ', 'banner']);
+    expect(preview).toEqual(['github', 'commit', 'banner']);
+    expect(preview).toEqual(
+      buildMergedEntry(candidates, { title: 'x', tags: ['banner', 'github', ' ', 'banner'] })
+        .frontmatter.tags
+    );
+    expect(mergedTags(candidates)).toEqual(['github', 'commit']);
   });
 
   it('mixed commit/PR selection: "items" header and short ids kept for PRs', () => {

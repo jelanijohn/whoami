@@ -42,7 +42,7 @@ import {
   claudeCodeRootAllowed,
   CLAUDE_CODE_DEFAULT_PROJECTS
 } from './claude-code';
-import { rawItemToEntryInput, stageItems } from './pipeline';
+import { rawItemToEntryInput, selectNewItems, stageItems } from './pipeline';
 import type { RawItem } from './types';
 
 // --- GitHub mapper (GraphQL `search` nodes — see github-graphql-migration.md) -
@@ -447,6 +447,27 @@ describe('mapGithubCommitNode', () => {
     expect(item.body).toContain('Changes: +120 −8 across 4 files.');
     expect(item.body).toContain('--- Message ---\nResolves the long-standing ask.\n\nDetails follow.');
     expect(item.body).not.toContain('Add commit history mode'); // headline only in title
+    // No associatedPullRequests in the node ⇒ neither key (byte-identity guard).
+    expect(item.supersededBy).toBeUndefined();
+    expect(item.extraFrontmatter?.pr_ids).toBeUndefined();
+  });
+
+  it('extracts associated PR databaseIds into supersededBy and pr_ids', () => {
+    const item = mapGithubCommitNode(
+      {
+        ...GQL_COMMIT,
+        associatedPullRequests: { nodes: [{ databaseId: 123 }, { databaseId: null }, { databaseId: 456 }] }
+      },
+      'acme/waid'
+    );
+    expect(item.supersededBy).toEqual(['123', '456']); // null ids dropped
+    expect(item.extraFrontmatter?.pr_ids).toEqual(['123', '456']);
+  });
+
+  it('omits both PR keys when the connection is present but empty', () => {
+    const item = mapGithubCommitNode({ ...GQL_COMMIT, associatedPullRequests: { nodes: [] } }, 'acme/waid');
+    expect(item.supersededBy).toBeUndefined();
+    expect(item.extraFrontmatter?.pr_ids).toBeUndefined();
   });
 
   it('omits the message block when messageBody is empty', () => {
@@ -475,6 +496,9 @@ describe('commitsQuery', () => {
     expect(q).not.toContain('ref(');
     expect(q).toContain('changedFilesIfAvailable');
     expect(q).toContain('history(author:');
+    // PR-overlap exclusion rides the same query — no per-commit call (D1).
+    expect(q).toContain('associatedPullRequests(first: 5)');
+    expect(q).toContain('databaseId');
   });
 
   it('selects ref(qualifiedName:) when there is a branch', () => {
@@ -483,13 +507,15 @@ describe('commitsQuery', () => {
     expect(q).not.toContain('defaultBranchRef');
     expect(q).toContain('changedFilesIfAvailable');
     expect(q).toContain('history(author:');
+    expect(q).toContain('associatedPullRequests(first: 5)');
+    expect(q).toContain('databaseId');
   });
 });
 
 // --- GitHub commits: fetch path (fake Http, GraphQL history) -----------------
 
 /** A commit history node (sequential SHAs via index so fixtures vary). */
-function commitNode(i: number, parents = 1): unknown {
+function commitNode(i: number, parents = 1, prIds: number[] = []): unknown {
   const oid = String(i).padStart(40, '0');
   return {
     oid,
@@ -501,7 +527,8 @@ function commitNode(i: number, parents = 1): unknown {
     additions: i,
     deletions: 0,
     changedFilesIfAvailable: 1,
-    parents: { totalCount: parents }
+    parents: { totalCount: parents },
+    ...(prIds.length ? { associatedPullRequests: { nodes: prIds.map((id) => ({ databaseId: id })) } } : {})
   };
 }
 
@@ -571,6 +598,29 @@ describe('fetchGithub commit mode', () => {
       excludeMerges: false
     });
     expect(kept).toHaveLength(3); // merge retained when toggled off
+  });
+
+  it('keeps supersededBy by default and strips it when excludePrCommits is off', async () => {
+    const page = gqlHistory([commitNode(1, 1, [123])]);
+    const [byDefault] = await fetchGithub(commitHttp(page), {
+      token: 't',
+      user: 'jelani',
+      repo: 'acme/waid',
+      mode: 'commits'
+    });
+    expect(byDefault.supersededBy).toEqual(['123']);
+    expect(byDefault.extraFrontmatter?.pr_ids).toEqual(['123']);
+
+    const [optedOut] = await fetchGithub(commitHttp(page), {
+      token: 't',
+      user: 'jelani',
+      repo: 'acme/waid',
+      mode: 'commits',
+      excludePrCommits: false
+    });
+    // The dedupe hint is stripped; pr_ids stays — it is provenance either way.
+    expect(optedOut.supersededBy).toBeUndefined();
+    expect(optedOut.extraFrontmatter?.pr_ids).toEqual(['123']);
   });
 
   it('converts date bounds to GitTimestamps and passes null when absent', async () => {
@@ -1257,6 +1307,47 @@ describe('staging pipeline', () => {
     const r3 = await stageItems(store, [item(1), item(2)]);
     expect(r3).toMatchObject({ fetched: 2, staged: 0, skippedPromoted: 1, skippedRejected: 1 });
     expect(await store.listCandidates()).toHaveLength(0);
+  });
+
+  it('skips a commit whose associated PR is already handled (supersededBy)', async () => {
+    const commit = (n: number, prIds: string[]): RawItem => ({
+      source: 'github',
+      sourceId: String(n).padStart(40, '0'),
+      title: `commit ${n}`,
+      date: '2026-01-01',
+      body: `Body ${n}`,
+      suggestedType: 'journal',
+      suggestedTags: ['github', 'commit'],
+      supersededBy: prIds
+    });
+
+    // Stage a PR candidate (sourceId 'id-1'), then a commit carrying that PR id:
+    // skipped while the PR is only *staged* in the inbox.
+    await stageItems(store, [item(1)]);
+    const r1 = await stageItems(store, [commit(1, ['id-1'])]);
+    expect(r1).toMatchObject({ fetched: 1, staged: 0, skippedSuperseded: 1 });
+    expect(await store.listCandidates()).toHaveLength(1); // just the PR
+
+    // Promote the PR → the commit is still skipped (provenance index).
+    const cand = (await store.listCandidates())[0];
+    await store.promoteCandidate(cand.path!);
+    const r2 = await stageItems(store, [commit(1, ['id-1'])]);
+    expect(r2).toMatchObject({ staged: 0, skippedSuperseded: 1 });
+
+    // Reject a second PR → a commit carrying its id is skipped too.
+    await stageItems(store, [item(2)]);
+    const cand2 = (await store.listCandidates())[0];
+    await store.rejectCandidate(cand2.path!);
+    const r3 = await stageItems(store, [commit(2, ['id-2'])]);
+    expect(r3).toMatchObject({ staged: 0, skippedSuperseded: 1 });
+
+    // No false positive: an unknown PR id stages normally.
+    const r4 = await stageItems(store, [commit(3, ['id-999'])]);
+    expect(r4).toMatchObject({ staged: 1, skippedSuperseded: 0 });
+
+    // selectNewItems drops superseded items too — triage never sees them.
+    const fresh = await selectNewItems(store, [commit(1, ['id-1']), commit(4, ['id-999'])]);
+    expect(fresh.map((i) => i.title)).toEqual(['commit 4']);
   });
 
   it('needs_date item stages with empty date (allow-undated spec §B)', async () => {

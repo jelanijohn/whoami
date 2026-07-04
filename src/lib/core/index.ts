@@ -99,6 +99,7 @@ export {
   buildMergedEntry,
   mergedTitleDefault,
   mergeLedger,
+  mergedTags,
   shortcutStoryTitle,
   type MergeOverrides
 } from './merge';

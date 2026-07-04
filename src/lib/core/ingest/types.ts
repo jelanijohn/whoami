@@ -50,6 +50,11 @@ export interface RawItem {
   extraFrontmatter?: Record<string, unknown>;
   /** Provider extras, kept small and string-valued (waid's `meta`). */
   meta?: Record<string, string>;
+  /** Same-source ids that supersede this item: stage it only if NONE of them is
+   * already promoted, rejected, or staged. Transient — never persisted to
+   * frontmatter. GitHub commit mode fills it with the commit's associated PRs'
+   * databaseIds (commit sourceIds are 40-hex, PR ids decimal — no collision). */
+  supersededBy?: string[];
 }
 
 /** What a staging run did — surfaced in the UI after each adapter run. */
@@ -60,6 +65,9 @@ export interface IngestReport {
   skippedPromoted: number;
   /** Skipped: previously rejected by the human. */
   skippedRejected: number;
+  /** Skipped: superseded by an already-handled item (e.g. a commit whose
+   * associated PR is already staged/promoted/rejected). */
+  skippedSuperseded: number;
   /** Per-item problems; a bad item never aborts the run. */
   errors: string[];
 }

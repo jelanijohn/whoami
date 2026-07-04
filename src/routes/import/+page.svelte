@@ -88,7 +88,8 @@
       discussionCharCap: cap && Number.isFinite(cap) && cap > 0 ? cap : undefined,
       mode: g.mode,
       branch: g.branch.trim() || undefined,
-      excludeMerges: g.excludeMerges
+      excludeMerges: g.excludeMerges,
+      excludePrCommits: g.excludePrCommits
     });
   }
 
@@ -509,7 +510,7 @@
                 <span class="font-semibold text-[var(--imp-ok-deep)]">+{r.report.staged}</span>
                 <span class="truncate">{r.label}</span>
                 <span class="ml-auto flex-none text-[var(--imp-ok-soft)]">
-                  {r.report.skippedPromoted + r.report.skippedRejected} known
+                  {r.report.skippedPromoted + r.report.skippedRejected + r.report.skippedSuperseded} known
                 </span>
               {:else}
                 <span class="truncate text-amber-700 dark:text-amber-300">{r.label} — failed: {r.error}</span>
@@ -529,6 +530,7 @@
         <div class="{app.lastRefreshReport ? 'mt-3 border-t border-[var(--imp-ok-border)] pt-3' : 'mt-2.5'} text-[11.5px] text-[var(--imp-ok-mid)]">
           <span class="font-semibold text-[var(--imp-ok-deep)]">Last import</span> · fetched {r.fetched} ·
           staged {r.staged} · {r.skippedPromoted + r.skippedRejected} already known
+          {#if r.skippedSuperseded}· {r.skippedSuperseded} covered by imported PRs{/if}
           {#if r.errors.length}· <span class="text-amber-700 dark:text-amber-300">{r.errors.length} error{r.errors.length === 1 ? '' : 's'}</span>{/if}
         </div>
         {#if r.staged > 0 && !app.lastRefreshReport}
@@ -692,6 +694,10 @@
                       <label class="flex items-center gap-2 text-xs text-[var(--color-muted)]">
                         <input type="checkbox" bind:checked={app.importSettings.github.excludeMerges} />
                         Exclude merge commits
+                      </label>
+                      <label class="flex items-center gap-2 text-xs text-[var(--color-muted)]">
+                        <input type="checkbox" bind:checked={app.importSettings.github.excludePrCommits} />
+                        Skip commits from imported PRs
                       </label>
                     {:else}
                       <label class="flex items-center gap-2 text-xs text-[var(--color-muted)]">

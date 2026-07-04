@@ -11,7 +11,7 @@ import {
 import type { IngestReport } from './ingest/types';
 
 function report(over: Partial<IngestReport> = {}): IngestReport {
-  return { fetched: 0, staged: 0, skippedPromoted: 0, skippedRejected: 0, errors: [], ...over };
+  return { fetched: 0, staged: 0, skippedPromoted: 0, skippedRejected: 0, skippedSuperseded: 0, errors: [], ...over };
 }
 
 describe('withFeedDefaults (spec §4.1.1, §10.1, §10.5)', () => {

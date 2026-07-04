@@ -631,6 +631,21 @@ export class RecordStore {
     );
   }
 
+  /** Provenance keys (`source\tsource_id`) of every staged inbox candidate
+   * (bulk dedupe). `String()` coercion because YAML may round-trip
+   * numeric-looking ids as numbers. */
+  async candidateKeys(): Promise<Set<string>> {
+    const keys = new Set<string>();
+    for (const c of await this.listCandidates()) {
+      const src = c.frontmatter.source;
+      const sid = c.frontmatter.source_id;
+      if (src != null && sid != null && String(src) && String(sid)) {
+        keys.add(provenanceKey(String(src), String(sid)));
+      }
+    }
+    return keys;
+  }
+
   private async appendRejected(source: string, sourceId: string, title: string): Promise<void> {
     const { fs } = this.platform;
     await fs.mkdir(this.abs(INBOX_DIR));

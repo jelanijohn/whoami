@@ -203,6 +203,27 @@ export function mergeLedger(candidates: Entry[]): string[] {
   });
 }
 
+// --- Tag fold -------------------------------------------------------------------
+
+/**
+ * The merged entry's tags: every constituent's own tags in constituent order,
+ * then the override tags, deduped (existing first — MergeOverrides.tags
+ * semantics). Exported so the merge preview dialog shows exactly the tags
+ * {@link buildMergedEntry} will apply.
+ */
+export function mergedTags(candidates: Entry[], overrideTags?: string[]): string[] {
+  const tags: string[] = [];
+  for (const c of sortConstituents(candidates)) {
+    const t = Array.isArray(c.frontmatter.tags) ? c.frontmatter.tags : [];
+    for (const tag of t) if (typeof tag === 'string' && !tags.includes(tag)) tags.push(tag);
+  }
+  for (const tag of overrideTags ?? []) {
+    const t = tag.trim();
+    if (t && !tags.includes(t)) tags.push(t);
+  }
+  return tags;
+}
+
 // --- Default title (spec §1.4) --------------------------------------------------
 
 /**
@@ -281,15 +302,7 @@ export function buildMergedEntry(candidates: Entry[], overrides: MergeOverrides)
   }
 
   // --- Frontmatter folds ------------------------------------------------------
-  const tags: string[] = [];
-  for (const c of ordered) {
-    const t = Array.isArray(c.frontmatter.tags) ? c.frontmatter.tags : [];
-    for (const tag of t) if (typeof tag === 'string' && !tags.includes(tag)) tags.push(tag);
-  }
-  for (const tag of overrides.tags ?? []) {
-    const t = tag.trim();
-    if (t && !tags.includes(t)) tags.push(t);
-  }
+  const tags = mergedTags(ordered, overrides.tags);
 
   const sourceIds = ordered.map(sourceIdOf);
   const links: string[] = [];

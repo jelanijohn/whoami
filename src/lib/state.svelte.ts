@@ -152,6 +152,9 @@ export interface ImportSettings {
     branch: string;
     /** Commit mode: drop merge commits (default true). */
     excludeMerges: boolean;
+    /** Commit mode: skip commits whose associated PR is already staged,
+     * promoted, or rejected (default true). */
+    excludePrCommits: boolean;
     /** Stage candidates as `private: true` (default). Unchecking stages them
      * public from the start — the user's deliberate opt-out of the protective
      * default for this source. */
@@ -215,6 +218,7 @@ export const DEFAULT_IMPORT_SETTINGS: ImportSettings = {
     mode: 'items',
     branch: '',
     excludeMerges: true,
+    excludePrCommits: true,
     importPrivate: true
   },
   asana: { workspace: '', project: '', since: '', until: '', includeCompleted: true, limit: 100 },
@@ -999,7 +1003,7 @@ class AppState {
       });
       this.lastImportReport = report;
       await this.loadCandidates();
-      const known = report.skippedPromoted + report.skippedRejected;
+      const known = report.skippedPromoted + report.skippedRejected + report.skippedSuperseded;
       this.message = `${source}: staged ${report.staged}, ${known} already known${report.errors.length ? `, ${report.errors.length} errors` : ''}${note ? ` — ${note}` : ''}`;
       return report;
     });
@@ -1123,7 +1127,7 @@ class AppState {
       const report = await stageItems(this.store, items, { signals, project: this.importProject });
       this.lastImportReport = report;
       await this.loadCandidates();
-      const known = report.skippedPromoted + report.skippedRejected;
+      const known = report.skippedPromoted + report.skippedRejected + report.skippedSuperseded;
       this.message = `linkedin: staged ${report.staged}, ${known} already known${report.errors.length ? `, ${report.errors.length} errors` : ''}`;
       return report;
     });
@@ -1171,7 +1175,7 @@ class AppState {
       });
       this.lastImportReport = report;
       await this.loadCandidates();
-      const known = report.skippedPromoted + report.skippedRejected;
+      const known = report.skippedPromoted + report.skippedRejected + report.skippedSuperseded;
       this.message = `claude-code: staged ${report.staged}, ${known} already known${report.errors.length ? `, ${report.errors.length} errors` : ''}`;
       return report;
     });
@@ -1324,7 +1328,7 @@ class AppState {
         });
         this.lastImportReport = report;
         await this.loadCandidates();
-        const known = report.skippedPromoted + report.skippedRejected;
+        const known = report.skippedPromoted + report.skippedRejected + report.skippedSuperseded;
         this.message = `warp: staged ${report.staged}, ${known} already known${report.errors.length ? `, ${report.errors.length} errors` : ''}`;
         return report;
       } finally {
@@ -1397,7 +1401,7 @@ class AppState {
       });
       this.lastImportReport = report;
       await this.loadCandidates();
-      const known = report.skippedPromoted + report.skippedRejected;
+      const known = report.skippedPromoted + report.skippedRejected + report.skippedSuperseded;
       this.message = `neuroskill: staged ${report.staged}, ${known} already known${report.errors.length ? `, ${report.errors.length} errors` : ''}`;
       return report;
     });
@@ -1443,7 +1447,7 @@ class AppState {
       report.errors.push(...errors);
       this.lastImportReport = report;
       await this.loadCandidates();
-      const known = report.skippedPromoted + report.skippedRejected;
+      const known = report.skippedPromoted + report.skippedRejected + report.skippedSuperseded;
       this.message = `résumé: parsed ${items.length}, staged ${report.staged}, ${known} already known${errors.length ? `, ${errors.length} skipped` : ''}`;
       return report;
     });
@@ -1515,7 +1519,7 @@ class AppState {
       }
       this.lastImportReport = report;
       await this.loadCandidates();
-      const known = report.skippedPromoted + report.skippedRejected;
+      const known = report.skippedPromoted + report.skippedRejected + report.skippedSuperseded;
       // When pages were fetched but nothing was proposed, say why: the importer
       // never invents a date (spec §8), so undated prose and client-rendered
       // pages yield nothing — that's the brutal-accuracy boundary, not a failure.
@@ -1661,6 +1665,8 @@ class AppState {
       mode: (p.mode as 'items' | 'commits') ?? 'items',
       branch: String(p.branch ?? '').trim() || undefined,
       excludeMerges: p.excludeMerges === undefined ? true : !!p.excludeMerges,
+      // Absent on feeds saved before the PR-overlap exclusion shipped ⇒ true.
+      excludePrCommits: p.excludePrCommits === undefined ? true : !!p.excludePrCommits,
       // The feed's snapshotted ticket-ref pattern (spec §7.2); absent on older
       // feeds ⇒ undefined ⇒ importGithub falls back to the global setting.
       shortcutRefPattern: String(p.shortcutRefPattern ?? '').trim() || undefined
@@ -1739,7 +1745,7 @@ class AppState {
     const refresh = aggregateRefreshReport(startedAt, results);
     this.lastRefreshReport = refresh;
     const known = results.reduce(
-      (n, r) => n + (r.report ? r.report.skippedPromoted + r.report.skippedRejected : 0),
+      (n, r) => n + (r.report ? r.report.skippedPromoted + r.report.skippedRejected + r.report.skippedSuperseded : 0),
       0
     );
     const errs = results.filter((r) => !r.report).length;

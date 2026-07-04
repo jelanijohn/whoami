@@ -57,6 +57,9 @@ export interface GithubFetchOpts {
   branch?: string;
   /** Commit mode only: drop merge commits (parents > 1). Default true (D5). */
   excludeMerges?: boolean;
+  /** Commit mode only: skip commits whose associated PR is already staged,
+   *  promoted, or rejected (via {@link RawItem.supersededBy}). Default true. */
+  excludePrCommits?: boolean;
 
   /** Shortcut ticket-reference pattern (regex source) the mappers extract with
    *  (shortcut-enrichment spec D5). Omitted ⇒ {@link DEFAULT_SHORTCUT_REF}.
@@ -235,6 +238,19 @@ export function mapGithubCommitNode(node: unknown, repo: string, refPattern = DE
     meta.shortcut_id = refs[0];
   }
 
+  // Associated PRs (the databaseIds every imported PR was keyed by): provenance
+  // in extraFrontmatter (the shortcut_ids idiom) + `supersededBy` so the
+  // pipeline can skip commits whose PR is already handled. No PRs ⇒ neither
+  // key, keeping PR-less output byte-identical to before.
+  const prIds = (Array.isArray(get(node, 'associatedPullRequests', 'nodes'))
+    ? (get(node, 'associatedPullRequests', 'nodes') as unknown[])
+    : []
+  )
+    .map((p) => get(p, 'databaseId'))
+    .filter((id): id is number => typeof id === 'number')
+    .map(String);
+  if (prIds.length > 0) extraFrontmatter.pr_ids = prIds;
+
   return {
     source: 'github',
     sourceId: oid,
@@ -246,7 +262,8 @@ export function mapGithubCommitNode(node: unknown, repo: string, refPattern = DE
     suggestedTags: ['github', 'commit'],
     suggestedProject: slugify(repo),
     meta,
-    extraFrontmatter
+    extraFrontmatter,
+    ...(prIds.length > 0 ? { supersededBy: prIds } : {})
   };
 }
 
@@ -254,7 +271,9 @@ export function mapGithubCommitNode(node: unknown, repo: string, refPattern = DE
  * picks the ref selector: false ⇒ `defaultBranchRef`, true ⇒ `ref($ref)` with
  * `$ref` = `refs/heads/<branch>`. Both share the `... on Commit { history }`
  * body. `changedFilesIfAvailable` (not the deprecated `changedFiles`) carries
- * change size in the same query — no N+1 (D1). */
+ * change size in the same query — no N+1 (D1). `associatedPullRequests` rides
+ * along too (~5 extra points/page against the 5,000/hr budget) so PR-overlap
+ * exclusion needs no per-commit call either. */
 export function commitsQuery(hasBranch: boolean): string {
   const inner = `target {
         ... on Commit {
@@ -264,6 +283,7 @@ export function commitsQuery(hasBranch: boolean): string {
               oid messageHeadline messageBody authoredDate committedDate url
               additions deletions changedFilesIfAvailable
               parents { totalCount }
+              associatedPullRequests(first: 5) { nodes { databaseId } }
             }
           }
         }
@@ -335,6 +355,7 @@ async function fetchGithubCommits(http: Http, opts: GithubFetchOpts): Promise<Ra
   const since = gitTimestamp(opts.since, false);
   const until = gitTimestamp(opts.until, true);
   const excludeMerges = opts.excludeMerges !== false; // default true
+  const excludePrCommits = opts.excludePrCommits !== false; // default true
 
   const items: RawItem[] = [];
   let cursor: string | null = null;
@@ -357,7 +378,11 @@ async function fetchGithubCommits(http: Http, opts: GithubFetchOpts): Promise<Ra
       // The only acquisition-side filter (D5/§1.6): structural, user-visible.
       const parents = asNum(get(node, 'parents', 'totalCount')) ?? 0;
       if (excludeMerges && parents > 1) continue;
-      items.push(mapGithubCommitNode(node, repo, opts.shortcutRefPattern));
+      const item = mapGithubCommitNode(node, repo, opts.shortcutRefPattern);
+      // Opted out of PR-overlap exclusion: strip the transient dedupe hint but
+      // keep `pr_ids` — it is provenance either way.
+      if (!excludePrCommits) delete item.supersededBy;
+      items.push(item);
       if (items.length >= cap) break;
     }
     if (items.length >= cap) break;

@@ -97,7 +97,9 @@ explicit promote.**
   fixture-tested; the layer never touches the record, secrets, or the index
   directly. The GitHub adapter imports either the issues & PRs you authored or, per
   run, a repo's commits you authored (change-size counts and your message — never
-  the diff). GitHub items that mention a Shortcut ticket (`sc-12345`, pattern
+  the diff); commits whose PR you already imported are skipped by default (the
+  PR lookup rides the same query — no extra calls). GitHub items that mention a
+  Shortcut ticket (`sc-12345`, pattern
   configurable) are always tagged with it; with a Shortcut token saved, imports —
   and an inbox backfill button — also enrich them with that story's metadata
   (name, state, epic…), one fetch per distinct ticket, description off by

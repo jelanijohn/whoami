@@ -1,6 +1,6 @@
 <script lang="ts">
   import { SvelteSet } from 'svelte/reactivity';
-  import { slugify, mergedTitleDefault, mergeLedger, ENTRY_TYPES, type Entry } from '$lib/core';
+  import { slugify, mergedTitleDefault, mergeLedger, mergedTags, ENTRY_TYPES, type Entry } from '$lib/core';
   import { app } from '$lib/state.svelte';
   import Icon from '$lib/components/Icon.svelte';
   import CandidateRow from '$lib/components/CandidateRow.svelte';
@@ -46,6 +46,15 @@
   let expandedItems = new SvelteSet<string>();
   let selected = new SvelteSet<string>();
 
+  // The sticky toolbar can collapse to its search/sort row; the choice
+  // persists across sessions (a layout pref, like the Journal view prefs).
+  const LS_TOOLBAR = 'whoami:inboxToolbar';
+  let toolbarCollapsed = $state(localStorage.getItem(LS_TOOLBAR) === 'collapsed');
+  function toggleToolbar() {
+    toolbarCollapsed = !toolbarCollapsed;
+    localStorage.setItem(LS_TOOLBAR, toolbarCollapsed ? 'collapsed' : 'open');
+  }
+
   // A single project applied to every bulk-promoted item; the sentinel keeps
   // each row's own suggestion, an explicit slug (or none) overrides all.
   const KEEP = '__keep__';
@@ -74,6 +83,9 @@
   const sorted = $derived(sortCandidates(filtered, sortKey, sortDir));
   const groups = $derived(computeGroups(sorted, groupBy, ctx));
   const filtersActive = $derived(hasActiveFilters(filterOpts));
+  // Filters that live in the collapsible rows — surfaced as a count chip when
+  // the toolbar is collapsed so an active-but-hidden filter stays visible.
+  const hiddenFilterCount = $derived(selTypes.length + selSources.length + (filterProject ? 1 : 0));
 
   const total = $derived(app.candidates.length);
   const flaggedVisible = $derived(filtered.filter(isFrivolous).length);
@@ -290,6 +302,11 @@
     mergePaths.map((p) => byPath.get(p)).filter((c): c is Entry => !!c)
   );
   const mergePreview = $derived(mergeOpen || mergeResolving ? mergeLedger(mergeCandidates) : []);
+  // The exact tags the merged entry will carry: constituents' own tags unioned
+  // with the bulk bar's tags — the same fold buildMergedEntry applies.
+  const mergeTags = $derived(
+    mergeOpen || mergeResolving ? mergedTags(mergeCandidates, bulkTags) : []
+  );
   const mergeDateOk = $derived(isoOk(mergeDate));
   // The dialog's project select may carry a shared suggestion that isn't a
   // project yet — shown like CandidateRow's "(suggested)" orphan option.
@@ -580,46 +597,6 @@
         {/if}
       </p>
     </div>
-    <div class="flex items-center gap-2">
-      {#if app.llmReady}
-        <input
-          type="text"
-          bind:value={llmInstructions}
-          placeholder="Extra LLM instructions…"
-          title="Free-text guidance the LLM also weighs when judging what's frivolous"
-          disabled={app.busy}
-          class="h-9 w-52 rounded-[9px] border border-[var(--color-line)] bg-white px-2.5 text-[12.5px] text-[var(--color-ink)] disabled:opacity-50 dark:bg-[var(--color-bar)]"
-        />
-      {/if}
-      {#if app.tokenPresent.shortcut}
-        <button
-          onclick={() => void app.enrichInboxFromShortcut()}
-          disabled={app.busy}
-          title="Backfill Shortcut story metadata onto candidates that reference a ticket (sc-…) — one fetch per distinct ticket, annotation only"
-          class="inline-flex h-9 items-center gap-1.5 rounded-[9px] border border-[var(--color-line)] bg-white px-3 text-[12.5px] font-medium text-[var(--color-muted)] disabled:opacity-50 dark:bg-[var(--color-bar)]"
-        >
-          <Icon name="bolt" size={15} /> Enrich from Shortcut
-        </button>
-      {/if}
-      <button
-        onclick={() => void app.retriageInbox()}
-        disabled={app.busy}
-        title="Re-run the triage prefilter over the inbox with the current rules"
-        class="inline-flex h-9 items-center gap-1.5 rounded-[9px] border border-[var(--color-line)] bg-white px-3 text-[12.5px] font-medium text-[var(--color-muted)] disabled:opacity-50 dark:bg-[var(--color-bar)]"
-      >
-        <Icon name="filter_alt" size={15} /> Re-triage
-      </button>
-      <button
-        onclick={() => void app.llmTriageInbox(llmInstructions)}
-        disabled={app.busy || !app.llmReady}
-        title={app.llmReady
-          ? 'Send the kept items through the LLM to flag frivolous ones the rules miss'
-          : 'Configure an AI provider (Data → AI provider) to enable LLM triage'}
-        class="inline-flex h-9 items-center gap-1.5 rounded-[9px] border border-[var(--imp-feed-border)] bg-[var(--imp-feed-from)] px-3 text-[12.5px] font-semibold text-[var(--color-accent)] disabled:opacity-50"
-      >
-        <Icon name="auto_awesome" size={15} /> LLM triage
-      </button>
-    </div>
   </div>
 
   {#if total === 0}
@@ -627,331 +604,402 @@
       Inbox clear. Run a data-source import to stage new candidates.
     </p>
   {:else}
-    <!-- 2. Filter / sort toolbar -->
-    <div
-      class="mt-[18px] flex flex-col gap-[11px] rounded-[14px] border border-[var(--color-line)] bg-white dark:bg-[var(--color-bar)]"
-      style="padding:13px 15px;"
-    >
-      <!-- Row A — search · sort · status -->
-      <div class="flex flex-wrap items-center gap-[9px]">
-        <div class="relative min-w-[230px] flex-1">
-          <span class="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[14px] leading-none text-[var(--jv-date)]">⌕</span>
-          <input
-            bind:value={search}
-            placeholder="Filter the inbox — title, body, source…"
-            class="h-[34px] w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-paper)] py-0 pl-7 pr-2.5 text-[13px] text-[var(--color-ink)] outline-none focus:border-[var(--color-accent)] focus:bg-white dark:focus:bg-[var(--color-bar)]"
-          />
-        </div>
-        <div class="flex items-center gap-1.5">
-          <span class={labelCls}>Sort</span>
-          <select
-            value={sortKey}
-            onchange={(e) => setSort(e.currentTarget.value as SortKey)}
-            class="h-[34px] rounded-lg border border-[var(--color-line)] bg-white px-2.5 text-[13px] text-[var(--color-ink)] dark:bg-[var(--color-bar)]"
-          >
-            <option value="date">Date</option>
-            <option value="title">Title</option>
-            <option value="type">Type</option>
-            <option value="source">Source</option>
-            <option value="project">Project</option>
-            <option value="size">Change size</option>
-          </select>
-          <button
-            onclick={() => (sortDir = sortDir === 'asc' ? 'desc' : 'asc')}
-            title="Toggle sort direction"
-            aria-label="Toggle sort direction"
-            class="size-[34px] rounded-lg border border-[var(--color-line)] bg-white text-[13px] text-[var(--color-muted)] dark:bg-[var(--color-bar)]"
-            >{sortDir === 'asc' ? '↑' : '↓'}</button
-          >
-        </div>
-        <div
-          class="inline-flex items-center gap-0.5 rounded-[9px] border border-[var(--color-line)] bg-[var(--color-paper)] p-[3px]"
-        >
-          {#each [['all', 'All'], ['kept', 'Kept'], ['flagged', 'Flagged']] as [mode, label] (mode)}
-            {@const sel = frivolousMode === mode}
-            <button
-              onclick={() => (frivolousMode = mode as FrivolousMode)}
-              class="rounded-[7px] px-3 py-1.5 text-[12.5px] transition-all duration-100"
-              style={sel
-                ? `background:white;box-shadow:0 1px 2px rgba(0,0,0,0.06);font-weight:600;color:${mode === 'flagged' ? '#b07a00' : 'var(--color-ink)'};`
-                : 'background:transparent;color:#8a8a86;'}
-            >
-              {label}
-            </button>
-          {/each}
-        </div>
-      </div>
-
-      <!-- Row B — type chips -->
-      {#if typesPresent.length}
-        <div class="flex flex-wrap items-center gap-1.5">
-          <span class="{labelCls} w-[50px]">Type</span>
-          {#each typesPresent as t (t)}
-            {@const m = typeMeta(t)}
-            {@const sel = selTypes.includes(t)}
-            <button
-              onclick={() => toggleType(t)}
-              class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[12px] font-medium transition-all duration-100"
-              style={sel
-                ? `background:${alpha(m.color, 12)};border:1px solid ${alpha(m.color, 40)};color:${m.color};`
-                : 'background:white;border:1px solid var(--color-line);color:var(--color-muted);'}
-            >
-              <span class="size-2 rounded-[2px]" style="background:{m.color}"></span>
-              {m.label}
-              <span class="tabular-nums opacity-60">{typeCounts[t]}</span>
-            </button>
-          {/each}
-        </div>
-      {/if}
-
-      <!-- Row C — source chips -->
-      {#if sourcesPresent.length}
-        <div class="flex flex-wrap items-center gap-1.5">
-          <span class="{labelCls} w-[50px]">Source</span>
-          {#each sourcesPresent as s (s)}
-            {@const m = sourceMeta(s)}
-            {@const sel = selSources.includes(s)}
-            <button
-              onclick={() => toggleSource(s)}
-              class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[12px] font-medium transition-all duration-100"
-              style={sel
-                ? `background:${alpha(m.color, 8)};border:1px solid ${alpha(m.color, 33)};color:${m.color};`
-                : 'background:white;border:1px solid var(--color-line);color:var(--color-muted);'}
-            >
-              <span style="color:{sel ? m.color : '#9a9a96'}"><Icon name={m.glyph} size={15} /></span>
-              {m.label}
-              <span class="tabular-nums opacity-60">{sourceCounts[s]}</span>
-            </button>
-          {/each}
-        </div>
-      {/if}
-
-      <!-- Row D — project · group by · expand · select-all · clear -->
-      <div class="flex flex-wrap items-center gap-[9px] border-t border-[var(--jv-hair)] pt-[11px]">
-        <select
-          bind:value={filterProject}
-          class="h-8 max-w-[230px] rounded-lg border border-[var(--color-line)] bg-white px-2.5 text-[13px] text-[var(--color-ink)] dark:bg-[var(--color-bar)]"
-        >
-          <option value="">All projects</option>
-          {#if hasUnaffiliated}<option value="__none">Unaffiliated</option>{/if}
-          {#each projectsWithCandidates as p (p.slug)}
-            <option value={p.slug}>{p.entry.frontmatter.title} ({projectCounts[p.slug]})</option>
-          {/each}
-        </select>
-
-        <div class="flex items-center gap-1.5">
-          <span class={labelCls}>Group by</span>
-          <select
-            value={groupBy}
-            onchange={(e) => {
-              groupBy = e.currentTarget.value as GroupBy;
-              onGroupByChange();
-            }}
-            class="h-8 rounded-lg border border-[var(--color-line)] bg-white px-2.5 text-[13px] text-[var(--color-ink)] dark:bg-[var(--color-bar)]"
-          >
-            <option value="source">Source</option>
-            <option value="type">Type</option>
-            <option value="project">Project</option>
-            <option value="ticket">Ticket</option>
-            <option value="status">Status</option>
-            <option value="none">Flat list</option>
-          </select>
-        </div>
-
-        {#if groupBy !== 'none'}
-          <button onclick={expandAll} class={ghostBtn}>Expand all</button>
-          <button onclick={collapseAll} class={ghostBtn}>Collapse all</button>
-        {/if}
-
-        <button
-          onclick={toggleSelectAll}
-          disabled={visiblePaths.length === 0}
-          class="inline-flex h-8 items-center gap-2 rounded-lg border border-[var(--color-line)] bg-white px-[9px] text-[12px] text-[var(--color-muted)] disabled:opacity-50 dark:bg-[var(--color-bar)]"
-        >
-          <span
-            class="grid size-4 place-items-center rounded-[5px]"
-            style={allVisibleSelected
-              ? 'background:var(--color-accent);border:1px solid var(--color-accent);'
-              : someVisibleSelected
-                ? `background:${alpha('var(--color-accent)', 20)};border:1.5px solid var(--color-accent);`
-                : 'background:white;border:1.5px solid var(--color-edge);'}
-          >
-            {#if allVisibleSelected}
-              <span class="text-white"><Icon name="check" size={12} strokeWidth={3} /></span>
-            {/if}
-          </span>
-          {allVisibleSelected ? 'Deselect all' : 'Select all'}
-        </button>
-
-        {#if filtersActive}
-          <button onclick={clearFilters} class="ml-auto bg-transparent text-[12px] text-[var(--color-private)]"
-            >Clear filters</button
-          >
-        {/if}
-      </div>
-    </div>
-
-    <!-- 3. Bulk action bar (sticky, when ≥1 selected) -->
-    {#if selectedCount > 0}
+    <!-- 2 + 3. Filter toolbar + bulk bar — pinned together to the top of the
+         scroll viewport; the paper backing hides list content sliding beneath. -->
+    <div class="sticky top-0 z-10 mt-1 bg-[var(--color-paper)] pb-1 pt-[14px]">
+      <!-- 2. Filter / sort toolbar (collapsible to its header + search rows) -->
       <div
-        class="sticky top-2 z-[5] mt-3 flex flex-col gap-[9px] rounded-[12px] px-3.5 py-2.5 backdrop-blur"
-        style="border:1px solid #c8d2f3;background:rgba(244,247,255,0.92);box-shadow:0 6px 20px rgba(40,50,90,0.1)"
+        class="flex flex-col gap-[11px] rounded-[14px] border border-[var(--color-line)] bg-white dark:bg-[var(--color-bar)]"
+        style="padding:13px 15px;"
       >
-        <div class="flex flex-wrap items-center gap-[9px]">
-          <span class="text-[13px] font-[650] text-[#2a3a7a]">{selectedCount} selected</span>
-          <button onclick={clearSelection} class="text-[12px] text-[#7a86b8]">Clear</button>
-          <div class="ml-auto flex flex-wrap items-center gap-[9px]">
-            <span class="text-[11px] uppercase tracking-[0.04em] text-[#7a86b8]">Project</span>
-            <select
-              bind:value={bulkProject}
-              class="h-8 rounded-lg border border-[var(--color-line)] bg-white px-2 text-[13px] text-[var(--color-ink)] dark:bg-[var(--color-bar)]"
+        <!-- Header row — collapse toggle · inbox-wide actions -->
+        <div class="flex flex-wrap items-center gap-2">
+          <button
+            onclick={toggleToolbar}
+            aria-expanded={!toolbarCollapsed}
+            title={toolbarCollapsed ? 'Show all filter rows' : 'Collapse to the search row'}
+            class="inline-flex h-9 items-center gap-1.5 rounded-[9px] border border-[var(--color-line)] bg-white px-3 text-[12.5px] font-medium text-[var(--color-muted)] dark:bg-[var(--color-bar)]"
+          >
+            <span
+              class="jv-chevron shrink-0 text-[17px] leading-none text-[var(--jv-chevron)] transition-transform duration-150 ease-out"
+              style="transform:rotate({toolbarCollapsed ? 0 : 90}deg)">›</span
             >
-              <option value={KEEP}>— keep each suggestion —</option>
-              <option value="">— none —</option>
-              {#each app.projects as p (p.slug)}
-                <option value={p.slug}>{p.entry.frontmatter.title}</option>
-              {/each}
-            </select>
+            Filters
+            {#if toolbarCollapsed && hiddenFilterCount > 0}
+              <span
+                title="Filters active in the hidden rows"
+                class="ml-0.5 rounded-full bg-[var(--jv-chip-bg)] px-2 py-0.5 text-[11px] font-semibold tabular-nums text-[var(--color-muted)]"
+                >{hiddenFilterCount}</span
+              >
+            {/if}
+          </button>
+          <div class="ml-auto flex flex-wrap items-center gap-2">
+            {#if app.llmReady}
+              <input
+                type="text"
+                bind:value={llmInstructions}
+                placeholder="Extra LLM instructions…"
+                title="Free-text guidance the LLM also weighs when judging what's frivolous"
+                disabled={app.busy}
+                class="h-9 w-52 rounded-[9px] border border-[var(--color-line)] bg-white px-2.5 text-[12.5px] text-[var(--color-ink)] disabled:opacity-50 dark:bg-[var(--color-bar)]"
+              />
+            {/if}
+            {#if app.tokenPresent.shortcut}
+              <button
+                onclick={() => void app.enrichInboxFromShortcut()}
+                disabled={app.busy}
+                title="Backfill Shortcut story metadata onto candidates that reference a ticket (sc-…) — one fetch per distinct ticket, annotation only"
+                class="inline-flex h-9 items-center gap-1.5 rounded-[9px] border border-[var(--color-line)] bg-white px-3 text-[12.5px] font-medium text-[var(--color-muted)] disabled:opacity-50 dark:bg-[var(--color-bar)]"
+              >
+                <Icon name="bolt" size={15} /> Enrich from Shortcut
+              </button>
+            {/if}
             <button
-              onclick={() => void openMergeDialog()}
-              disabled={app.busy || !mergeEligible}
-              title={mergeHint}
-              class="inline-flex h-8 items-center gap-1.5 rounded-lg border bg-white px-3 text-[12px] font-semibold text-[#2a3a7a] disabled:opacity-50"
-              style="border-color:#c8d2f3"
+              onclick={() => void app.retriageInbox()}
+              disabled={app.busy}
+              title="Re-run the triage prefilter over the inbox with the current rules"
+              class="inline-flex h-9 items-center gap-1.5 rounded-[9px] border border-[var(--color-line)] bg-white px-3 text-[12.5px] font-medium text-[var(--color-muted)] disabled:opacity-50 dark:bg-[var(--color-bar)]"
             >
-              <Icon name="commit" size={14} /> Merge into one entry
+              <Icon name="filter_alt" size={15} /> Re-triage
             </button>
             <button
-              onclick={() => void rejectSelected()}
-              disabled={app.busy}
-              class="inline-flex h-8 items-center gap-1.5 rounded-lg border bg-white px-3 text-[12px] font-semibold text-[var(--color-private)] disabled:opacity-50"
-              style="border-color:#ecc9b9"
+              onclick={() => void app.llmTriageInbox(llmInstructions)}
+              disabled={app.busy || !app.llmReady}
+              title={app.llmReady
+                ? 'Send the kept items through the LLM to flag frivolous ones the rules miss'
+                : 'Configure an AI provider (Data → AI provider) to enable LLM triage'}
+              class="inline-flex h-9 items-center gap-1.5 rounded-[9px] border border-[var(--imp-feed-border)] bg-[var(--imp-feed-from)] px-3 text-[12.5px] font-semibold text-[var(--color-accent)] disabled:opacity-50"
             >
-              <Icon name="close" size={14} /> Reject {selectedCount}
-            </button>
-            <button
-              onclick={() => void promoteSelected()}
-              disabled={app.busy}
-              class="inline-flex h-8 items-center gap-1.5 rounded-lg bg-[var(--color-accent)] px-3 text-[12px] font-semibold text-white hover:opacity-90 disabled:opacity-50"
-            >
-              <Icon name="check" size={14} strokeWidth={3} /> Promote {selectedCount}
+              <Icon name="auto_awesome" size={15} /> LLM triage
             </button>
           </div>
         </div>
-        <!-- Tags applied to every promoted item, on top of each item's own tags -->
-        <div class="flex flex-wrap items-center gap-1.5 border-t pt-[9px]" style="border-color:#dbe3f8">
-          <span class="text-[11px] uppercase tracking-[0.04em] text-[#7a86b8]">Tags</span>
-          {#each recordTags as t (t)}
-            {@const sel = bulkTags.includes(t)}
-            <button
-              onclick={() => toggleBulkTag(t)}
-              class="rounded-full px-2.5 py-1 text-[12px] font-medium transition-all duration-100"
-              style={sel
-                ? 'background:rgba(58,90,190,0.12);border:1px solid rgba(58,90,190,0.4);color:#2a3a7a;'
-                : 'background:white;border:1px solid #c8d2f3;color:#7a86b8;'}
+
+        <!-- Row A — search · sort · status -->
+        <div class="flex flex-wrap items-center gap-[9px]">
+          <div class="relative min-w-[230px] flex-1">
+            <span class="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[14px] leading-none text-[var(--jv-date)]">⌕</span>
+            <input
+              bind:value={search}
+              placeholder="Filter the inbox — title, body, source…"
+              class="h-[34px] w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-paper)] py-0 pl-7 pr-2.5 text-[13px] text-[var(--color-ink)] outline-none focus:border-[var(--color-accent)] focus:bg-white dark:focus:bg-[var(--color-bar)]"
+            />
+          </div>
+          <div class="flex items-center gap-1.5">
+            <span class={labelCls}>Sort</span>
+            <select
+              value={sortKey}
+              onchange={(e) => setSort(e.currentTarget.value as SortKey)}
+              class="h-[34px] rounded-lg border border-[var(--color-line)] bg-white px-2.5 text-[13px] text-[var(--color-ink)] dark:bg-[var(--color-bar)]"
             >
-              #{t}
-            </button>
-          {/each}
-          {#each customTags as t (t)}
+              <option value="date">Date</option>
+              <option value="title">Title</option>
+              <option value="type">Type</option>
+              <option value="source">Source</option>
+              <option value="project">Project</option>
+              <option value="size">Change size</option>
+            </select>
             <button
-              onclick={() => toggleBulkTag(t)}
-              title="Remove this tag"
-              class="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[12px] font-medium"
-              style="background:rgba(58,90,190,0.12);border:1px solid rgba(58,90,190,0.4);color:#2a3a7a;"
+              onclick={() => (sortDir = sortDir === 'asc' ? 'desc' : 'asc')}
+              title="Toggle sort direction"
+              aria-label="Toggle sort direction"
+              class="size-[34px] rounded-lg border border-[var(--color-line)] bg-white text-[13px] text-[var(--color-muted)] dark:bg-[var(--color-bar)]"
+              >{sortDir === 'asc' ? '↑' : '↓'}</button
             >
-              #{t} <Icon name="close" size={12} />
-            </button>
-          {/each}
-          {#if app.tags.length > recordTags.length}
-            <!-- The chip row caps at the 12 most-used tags; this dropdown reaches
-                 the rest. A picked tag outside the top 12 surfaces as a removable
-                 chip via customTags above. -->
-            <div class="relative">
+          </div>
+          <div
+            class="inline-flex items-center gap-0.5 rounded-[9px] border border-[var(--color-line)] bg-[var(--color-paper)] p-[3px]"
+          >
+            {#each [['all', 'All'], ['kept', 'Kept'], ['flagged', 'Flagged']] as [mode, label] (mode)}
+              {@const sel = frivolousMode === mode}
               <button
-                onclick={() => (tagMenuOpen = !tagMenuOpen)}
-                aria-haspopup="listbox"
-                aria-expanded={tagMenuOpen}
-                class="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[12px] font-medium"
-                style="background:white;border:1px solid #c8d2f3;color:#7a86b8;"
+                onclick={() => (frivolousMode = mode as FrivolousMode)}
+                class="rounded-[7px] px-3 py-1.5 text-[12.5px] transition-all duration-100 {sel
+                  ? 'bg-white font-semibold shadow-[0_1px_2px_rgba(0,0,0,0.06)] dark:bg-[#3a3b42]'
+                  : 'bg-transparent'}"
+                style={sel
+                  ? `color:${mode === 'flagged' ? 'var(--jv-type-skill)' : 'var(--color-ink)'};`
+                  : 'color:#8a8a86;'}
               >
-                All tags ({app.tags.length}) <Icon name="expand_more" size={13} />
+                {label}
               </button>
-              {#if tagMenuOpen}
+            {/each}
+          </div>
+        </div>
+
+        {#if !toolbarCollapsed}
+          <!-- Row B — type chips -->
+          {#if typesPresent.length}
+            <div class="flex flex-wrap items-center gap-1.5">
+              <span class="{labelCls} w-[50px]">Type</span>
+              {#each typesPresent as t (t)}
+                {@const m = typeMeta(t)}
+                {@const sel = selTypes.includes(t)}
                 <button
-                  class="fixed inset-0 z-40 cursor-default"
-                  aria-label="Close tag list"
-                  onclick={() => (tagMenuOpen = false)}
-                ></button>
-                <div
-                  class="absolute left-0 top-[calc(100%+6px)] z-50 w-[248px] overflow-hidden rounded-xl border bg-white"
-                  style="border-color:#c8d2f3;box-shadow:0 12px 32px -8px rgba(40,50,90,0.3)"
+                  onclick={() => toggleType(t)}
+                  class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[12px] font-medium transition-all duration-100"
+                  style={sel
+                    ? `background:${alpha(m.color, 12)};border:1px solid ${alpha(m.color, 40)};color:${m.color};`
+                    : 'background:white;border:1px solid var(--color-line);color:var(--color-muted);'}
                 >
-                  <div class="border-b p-2" style="border-color:#dbe3f8">
-                    <!-- svelte-ignore a11y_autofocus -->
-                    <input
-                      bind:value={tagMenuFilter}
-                      autofocus
-                      placeholder="Filter tags…"
-                      class="h-7 w-full rounded-lg border bg-white px-2 text-[12px] outline-none placeholder:text-[#8e99c4] focus:border-[var(--color-accent)]"
-                      style="border-color:#c8d2f3;color:#1d2742"
-                    />
-                  </div>
-                  <div class="max-h-64 overflow-y-auto py-1" role="listbox" aria-multiselectable="true">
-                    {#each tagMenuTags as t (t.tag)}
-                      {@const sel = bulkTags.includes(t.tag)}
-                      <button
-                        role="option"
-                        aria-selected={sel}
-                        onclick={() => toggleBulkTag(t.tag)}
-                        class="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[12px] hover:bg-[rgba(58,90,190,0.06)]"
-                        style="color:{sel ? '#2a3a7a' : '#4a5578'}"
-                      >
-                        <span
-                          class="grid h-3.5 w-3.5 shrink-0 place-items-center rounded"
-                          style={sel
-                            ? 'background:var(--color-accent);color:white;'
-                            : 'border:1px solid #c8d2f3;'}
-                        >
-                          {#if sel}<Icon name="check" size={10} strokeWidth={3.5} />{/if}
-                        </span>
-                        <span class="truncate">#{t.tag}</span>
-                        <span class="ml-auto shrink-0 text-[11px] text-[#8e99c4]">{t.count}</span>
-                      </button>
-                    {:else}
-                      <p class="px-2.5 py-2 text-[12px] text-[#8e99c4]">No tags match.</p>
-                    {/each}
-                  </div>
-                </div>
-              {/if}
+                  <span class="size-2 rounded-[2px]" style="background:{m.color}"></span>
+                  {m.label}
+                  <span class="tabular-nums opacity-60">{typeCounts[t]}</span>
+                </button>
+              {/each}
             </div>
           {/if}
-          <input
-            bind:value={newTagText}
-            placeholder="new tag…"
-            onkeydown={(e) => {
-              if (e.key === 'Enter') addNewTags();
-            }}
-            class="h-7 w-32 rounded-lg border bg-white px-2 text-[12px] outline-none placeholder:text-[#8e99c4] focus:border-[var(--color-accent)]"
-            style="border-color:#c8d2f3;color:#1d2742"
-          />
-          <button
-            onclick={addNewTags}
-            disabled={!newTagText.trim()}
-            title="Add tag"
-            class="h-7 rounded-lg border bg-white px-2 text-[12px] font-semibold text-[#2a3a7a] disabled:opacity-50"
-            style="border-color:#c8d2f3"
-          >
-            +
-          </button>
-          {#if bulkTags.length}
-            <span class="text-[11px] text-[#7a86b8]"
-              >{bulkTags.length} tag{bulkTags.length === 1 ? '' : 's'} will be added to each promoted item</span
-            >
+
+          <!-- Row C — source chips -->
+          {#if sourcesPresent.length}
+            <div class="flex flex-wrap items-center gap-1.5">
+              <span class="{labelCls} w-[50px]">Source</span>
+              {#each sourcesPresent as s (s)}
+                {@const m = sourceMeta(s)}
+                {@const sel = selSources.includes(s)}
+                <button
+                  onclick={() => toggleSource(s)}
+                  class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[12px] font-medium transition-all duration-100"
+                  style={sel
+                    ? `background:${alpha(m.color, 8)};border:1px solid ${alpha(m.color, 33)};color:${m.color};`
+                    : 'background:white;border:1px solid var(--color-line);color:var(--color-muted);'}
+                >
+                  <span style="color:{sel ? m.color : '#9a9a96'}"><Icon name={m.glyph} size={15} /></span>
+                  {m.label}
+                  <span class="tabular-nums opacity-60">{sourceCounts[s]}</span>
+                </button>
+              {/each}
+            </div>
           {/if}
-        </div>
+
+          <!-- Row D — project · group by · expand · select-all · clear -->
+          <div class="flex flex-wrap items-center gap-[9px] border-t border-[var(--jv-hair)] pt-[11px]">
+            <select
+              bind:value={filterProject}
+              class="h-8 max-w-[230px] rounded-lg border border-[var(--color-line)] bg-white px-2.5 text-[13px] text-[var(--color-ink)] dark:bg-[var(--color-bar)]"
+            >
+              <option value="">All projects</option>
+              {#if hasUnaffiliated}<option value="__none">Unaffiliated</option>{/if}
+              {#each projectsWithCandidates as p (p.slug)}
+                <option value={p.slug}>{p.entry.frontmatter.title} ({projectCounts[p.slug]})</option>
+              {/each}
+            </select>
+
+            <div class="flex items-center gap-1.5">
+              <span class={labelCls}>Group by</span>
+              <select
+                value={groupBy}
+                onchange={(e) => {
+                  groupBy = e.currentTarget.value as GroupBy;
+                  onGroupByChange();
+                }}
+                class="h-8 rounded-lg border border-[var(--color-line)] bg-white px-2.5 text-[13px] text-[var(--color-ink)] dark:bg-[var(--color-bar)]"
+              >
+                <option value="source">Source</option>
+                <option value="type">Type</option>
+                <option value="project">Project</option>
+                <option value="ticket">Ticket</option>
+                <option value="status">Status</option>
+                <option value="none">Flat list</option>
+              </select>
+            </div>
+
+            {#if groupBy !== 'none'}
+              <button onclick={expandAll} class={ghostBtn}>Expand all</button>
+              <button onclick={collapseAll} class={ghostBtn}>Collapse all</button>
+            {/if}
+
+            <button
+              onclick={toggleSelectAll}
+              disabled={visiblePaths.length === 0}
+              class="inline-flex h-8 items-center gap-2 rounded-lg border border-[var(--color-line)] bg-white px-[9px] text-[12px] text-[var(--color-muted)] disabled:opacity-50 dark:bg-[var(--color-bar)]"
+            >
+              <span
+                class="grid size-4 place-items-center rounded-[5px]"
+                style={allVisibleSelected
+                  ? 'background:var(--color-accent);border:1px solid var(--color-accent);'
+                  : someVisibleSelected
+                    ? `background:${alpha('var(--color-accent)', 20)};border:1.5px solid var(--color-accent);`
+                    : 'background:white;border:1.5px solid var(--color-edge);'}
+              >
+                {#if allVisibleSelected}
+                  <span class="text-white"><Icon name="check" size={12} strokeWidth={3} /></span>
+                {/if}
+              </span>
+              {allVisibleSelected ? 'Deselect all' : 'Select all'}
+            </button>
+
+            {#if filtersActive}
+              <button onclick={clearFilters} class="ml-auto bg-transparent text-[12px] text-[var(--color-private)]"
+                >Clear filters</button
+              >
+            {/if}
+          </div>
+        {/if}
       </div>
-    {/if}
+
+      <!-- 3. Bulk action bar (when ≥1 selected; sticks as part of the wrapper) -->
+      {#if selectedCount > 0}
+        <div
+          class="mt-3 flex flex-col gap-[9px] rounded-[12px] px-3.5 py-2.5 backdrop-blur"
+          style="border:1px solid #c8d2f3;background:rgba(244,247,255,0.92);box-shadow:0 6px 20px rgba(40,50,90,0.1)"
+        >
+          <div class="flex flex-wrap items-center gap-[9px]">
+            <span class="text-[13px] font-[650] text-[#2a3a7a]">{selectedCount} selected</span>
+            <button onclick={clearSelection} class="text-[12px] text-[#7a86b8]">Clear</button>
+            <div class="ml-auto flex flex-wrap items-center gap-[9px]">
+              <span class="text-[11px] uppercase tracking-[0.04em] text-[#7a86b8]">Project</span>
+              <select
+                bind:value={bulkProject}
+                class="h-8 rounded-lg border border-[var(--color-line)] bg-white px-2 text-[13px] text-[var(--color-ink)] dark:bg-[var(--color-bar)]"
+              >
+                <option value={KEEP}>— keep each suggestion —</option>
+                <option value="">— none —</option>
+                {#each app.projects as p (p.slug)}
+                  <option value={p.slug}>{p.entry.frontmatter.title}</option>
+                {/each}
+              </select>
+              <button
+                onclick={() => void openMergeDialog()}
+                disabled={app.busy || !mergeEligible}
+                title={mergeHint}
+                class="inline-flex h-8 items-center gap-1.5 rounded-lg border bg-white px-3 text-[12px] font-semibold text-[#2a3a7a] disabled:opacity-50"
+                style="border-color:#c8d2f3"
+              >
+                <Icon name="commit" size={14} /> Merge into one entry
+              </button>
+              <button
+                onclick={() => void rejectSelected()}
+                disabled={app.busy}
+                class="inline-flex h-8 items-center gap-1.5 rounded-lg border bg-white px-3 text-[12px] font-semibold text-[var(--color-private)] disabled:opacity-50"
+                style="border-color:#ecc9b9"
+              >
+                <Icon name="close" size={14} /> Reject {selectedCount}
+              </button>
+              <button
+                onclick={() => void promoteSelected()}
+                disabled={app.busy}
+                class="inline-flex h-8 items-center gap-1.5 rounded-lg bg-[var(--color-accent)] px-3 text-[12px] font-semibold text-white hover:opacity-90 disabled:opacity-50"
+              >
+                <Icon name="check" size={14} strokeWidth={3} /> Promote {selectedCount}
+              </button>
+            </div>
+          </div>
+          <!-- Tags applied to every promoted item, on top of each item's own tags -->
+          <div class="flex flex-wrap items-center gap-1.5 border-t pt-[9px]" style="border-color:#dbe3f8">
+            <span class="text-[11px] uppercase tracking-[0.04em] text-[#7a86b8]">Tags</span>
+            {#each recordTags as t (t)}
+              {@const sel = bulkTags.includes(t)}
+              <button
+                onclick={() => toggleBulkTag(t)}
+                class="rounded-full px-2.5 py-1 text-[12px] font-medium transition-all duration-100"
+                style={sel
+                  ? 'background:rgba(58,90,190,0.12);border:1px solid rgba(58,90,190,0.4);color:#2a3a7a;'
+                  : 'background:white;border:1px solid #c8d2f3;color:#7a86b8;'}
+              >
+                #{t}
+              </button>
+            {/each}
+            {#each customTags as t (t)}
+              <button
+                onclick={() => toggleBulkTag(t)}
+                title="Remove this tag"
+                class="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[12px] font-medium"
+                style="background:rgba(58,90,190,0.12);border:1px solid rgba(58,90,190,0.4);color:#2a3a7a;"
+              >
+                #{t} <Icon name="close" size={12} />
+              </button>
+            {/each}
+            {#if app.tags.length > recordTags.length}
+              <!-- The chip row caps at the 12 most-used tags; this dropdown reaches
+                   the rest. A picked tag outside the top 12 surfaces as a removable
+                   chip via customTags above. -->
+              <div class="relative">
+                <button
+                  onclick={() => (tagMenuOpen = !tagMenuOpen)}
+                  aria-haspopup="listbox"
+                  aria-expanded={tagMenuOpen}
+                  class="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[12px] font-medium"
+                  style="background:white;border:1px solid #c8d2f3;color:#7a86b8;"
+                >
+                  All tags ({app.tags.length}) <Icon name="expand_more" size={13} />
+                </button>
+                {#if tagMenuOpen}
+                  <button
+                    class="fixed inset-0 z-40 cursor-default"
+                    aria-label="Close tag list"
+                    onclick={() => (tagMenuOpen = false)}
+                  ></button>
+                  <div
+                    class="absolute left-0 top-[calc(100%+6px)] z-50 w-[248px] overflow-hidden rounded-xl border bg-white"
+                    style="border-color:#c8d2f3;box-shadow:0 12px 32px -8px rgba(40,50,90,0.3)"
+                  >
+                    <div class="border-b p-2" style="border-color:#dbe3f8">
+                      <!-- svelte-ignore a11y_autofocus -->
+                      <input
+                        bind:value={tagMenuFilter}
+                        autofocus
+                        placeholder="Filter tags…"
+                        class="h-7 w-full rounded-lg border bg-white px-2 text-[12px] outline-none placeholder:text-[#8e99c4] focus:border-[var(--color-accent)]"
+                        style="border-color:#c8d2f3;color:#1d2742"
+                      />
+                    </div>
+                    <div class="max-h-64 overflow-y-auto py-1" role="listbox" aria-multiselectable="true">
+                      {#each tagMenuTags as t (t.tag)}
+                        {@const sel = bulkTags.includes(t.tag)}
+                        <button
+                          role="option"
+                          aria-selected={sel}
+                          onclick={() => toggleBulkTag(t.tag)}
+                          class="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[12px] hover:bg-[rgba(58,90,190,0.06)]"
+                          style="color:{sel ? '#2a3a7a' : '#4a5578'}"
+                        >
+                          <span
+                            class="grid h-3.5 w-3.5 shrink-0 place-items-center rounded"
+                            style={sel
+                              ? 'background:var(--color-accent);color:white;'
+                              : 'border:1px solid #c8d2f3;'}
+                          >
+                            {#if sel}<Icon name="check" size={10} strokeWidth={3.5} />{/if}
+                          </span>
+                          <span class="truncate">#{t.tag}</span>
+                          <span class="ml-auto shrink-0 text-[11px] text-[#8e99c4]">{t.count}</span>
+                        </button>
+                      {:else}
+                        <p class="px-2.5 py-2 text-[12px] text-[#8e99c4]">No tags match.</p>
+                      {/each}
+                    </div>
+                  </div>
+                {/if}
+              </div>
+            {/if}
+            <input
+              bind:value={newTagText}
+              placeholder="new tag…"
+              onkeydown={(e) => {
+                if (e.key === 'Enter') addNewTags();
+              }}
+              class="h-7 w-32 rounded-lg border bg-white px-2 text-[12px] outline-none placeholder:text-[#8e99c4] focus:border-[var(--color-accent)]"
+              style="border-color:#c8d2f3;color:#1d2742"
+            />
+            <button
+              onclick={addNewTags}
+              disabled={!newTagText.trim()}
+              title="Add tag"
+              class="h-7 rounded-lg border bg-white px-2 text-[12px] font-semibold text-[#2a3a7a] disabled:opacity-50"
+              style="border-color:#c8d2f3"
+            >
+              +
+            </button>
+            {#if bulkTags.length}
+              <span class="text-[11px] text-[#7a86b8]"
+                >{bulkTags.length} tag{bulkTags.length === 1 ? '' : 's'} will be added to each promoted item</span
+              >
+            {/if}
+          </div>
+        </div>
+      {/if}
+    </div>
 
     <!-- 4. Grouped collapsible item list -->
     {#if filtered.length === 0}
@@ -1236,6 +1284,22 @@
             clear
           </button>
         </p>
+      {/if}
+
+      {#if mergeTags.length}
+        <!-- Read-only tag preview — the constituents' tags unioned with the bulk
+             bar's tags, exactly what the merged entry will carry. -->
+        <div class="flex flex-col gap-1">
+          <span class="text-xs font-medium text-[var(--color-muted)]">The merged entry will be tagged</span>
+          <div class="flex flex-wrap gap-1.5">
+            {#each mergeTags as t (t)}
+              <span
+                class="rounded-full border border-[var(--color-line)] bg-[var(--color-paper)] px-2.5 py-0.5 text-[12px] font-medium text-[var(--color-muted)]"
+                >#{t}</span
+              >
+            {/each}
+          </div>
+        </div>
       {/if}
 
       <!-- Read-only ledger preview — exactly what the merged body will assert. -->
