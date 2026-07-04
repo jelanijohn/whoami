@@ -75,6 +75,12 @@ export {
   type GmailFetchOpts
 } from './gmail';
 export {
+  GMAIL_QUERY_SYSTEM,
+  buildGmailQueryPrompt,
+  sanitizeSearchQuery,
+  suggestGmailQuery
+} from './gmail-query';
+export {
   parseCsv,
   csvToRecords,
   liDate,

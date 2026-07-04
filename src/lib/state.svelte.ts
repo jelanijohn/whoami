@@ -18,6 +18,7 @@ import {
   fetchAsana,
   listAsanaProjects,
   fetchGmail,
+  suggestGmailQuery,
   validateGithub,
   validateAsana,
   validateGmail,
@@ -1107,6 +1108,19 @@ class AppState {
     }
     return report;
   }
+  /** Plain-English description → Gmail search query via the LLM (waid's
+   * `generate_gmail_query`). Display-only: the result lands in the editable
+   * query field — nothing is fetched until the user runs the import. Returns
+   * null on failure (guard reports the error). */
+  suggestGmailQuery(description: string): Promise<string | null> {
+    return this.guard(async () => {
+      if (!this.llm) throw new Error('No LLM provider configured (set one in Data → AI provider)');
+      const query = await suggestGmailQuery(this.llm, description);
+      this.message = 'Search generated — tweak it if needed';
+      return query;
+    });
+  }
+
   importGmail(
     params: Omit<GmailFetchOpts, 'token'>,
     over?: { useLlmTriage?: boolean; private?: boolean; project?: string }

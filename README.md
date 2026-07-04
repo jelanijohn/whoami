@@ -114,7 +114,11 @@ explicit promote.**
   N selected GitHub candidates into ONE entry at the promote gate: a ledger of
   every commit/PR plus their deduplicated messages, carrying every
   constituent's provenance so re-imports skip them all. Deterministic, preview
-  first, and never applied to already-promoted entries. The website importer fetches only the pages you enter (and a sitemap
+  first, and never applied to already-promoted entries. The Gmail importer is
+  metadata-only (subjects & snippets, never bodies) and driven by a Gmail search
+  query you can type by hand or have the LLM draft from a plain-English
+  description ("unread from my manager this week") — the suggestion only fills
+  the editable query field; nothing is fetched until you run the import. The website importer fetches only the pages you enter (and a sitemap
   you point at) — it is not a crawler — and treats the polished prose as a prompt
   to write the rawer truth underneath. The NeuroSkill importer reads past EEG
   sessions from another app's local SQLite (read-only, `eeg_timeseries` + `labels`

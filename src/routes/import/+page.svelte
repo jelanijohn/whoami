@@ -118,6 +118,21 @@
     await app.importGmail({ query: m.query.trim(), limit: m.limit || undefined });
   }
 
+  // "Describe it — AI builds the search" (waid's Gmail query helper). The
+  // generated query only fills the editable field; nothing runs until Run.
+  let gmailAiPrompt = $state('');
+  let gmailAiBusy = $state(false);
+  async function generateGmailQuery() {
+    if (gmailAiBusy || !gmailAiPrompt.trim()) return;
+    gmailAiBusy = true;
+    try {
+      const query = await app.suggestGmailQuery(gmailAiPrompt);
+      if (query) app.importSettings.gmail.query = query;
+    } finally {
+      gmailAiBusy = false;
+    }
+  }
+
   async function runWebsite() {
     persist();
     const w = app.importSettings.website;
@@ -870,6 +885,30 @@
                       <input type="number" min="1" max="100" bind:value={app.importSettings.gmail.limit} class="{inputCls} w-20" />
                     </label>
                   </div>
+                  <div class="flex flex-wrap items-end gap-2 {app.llmReady ? '' : 'opacity-60'}">
+                    <label class="flex flex-1 flex-col text-xs text-[var(--color-muted)]">
+                      Or describe it — AI builds the search
+                      <input
+                        bind:value={gmailAiPrompt}
+                        placeholder="unread from my manager this week"
+                        class="{inputCls} w-full"
+                        disabled={!app.llmReady || gmailAiBusy}
+                        onkeydown={(e) => e.key === 'Enter' && generateGmailQuery()}
+                      />
+                    </label>
+                    <button
+                      class={btnCls}
+                      disabled={app.busy || gmailAiBusy || !app.llmReady || !gmailAiPrompt.trim()}
+                      onclick={generateGmailQuery}
+                    >
+                      {gmailAiBusy ? 'Generating…' : 'Generate'}
+                    </button>
+                  </div>
+                  {#if !app.llmReady}
+                    <p class="text-xs text-[var(--color-muted)]">
+                      The describe-it helper needs an AI provider — configure one in Data → AI provider.
+                    </p>
+                  {/if}
                   <div class="flex flex-wrap items-center gap-2 border-t border-dashed border-[var(--color-line)] pt-3">
                     <button class={runCls} disabled={app.busy || !app.importSettings.gmail.query.trim()} onclick={runGmail}>
                       <Icon name="sync" size={17} />
