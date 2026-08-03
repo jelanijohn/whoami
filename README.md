@@ -78,3 +78,7 @@ By design: no custom sync engine or server (sync is plain Git), the index is
 never authoritative or committed, no auto-push, no auto-resolved conflicts, no
 auto-promote (every entry is a human decision), and no "polishing" of the raw
 record — polishing is an output-stage concern only.
+
+## License
+
+[GPL-3.0-only](LICENSE).

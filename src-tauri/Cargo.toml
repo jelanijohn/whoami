@@ -3,6 +3,7 @@ name = "whoami"
 version = "0.1.0"
 description = "Who Am I — a private, locally-owned life & career record"
 authors = ["Jelani John"]
+license = "GPL-3.0-only"
 edition = "2021"
 rust-version = "1.77"
 

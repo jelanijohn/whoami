@@ -2,6 +2,7 @@
   "name": "whoami",
   "version": "0.1.0",
   "private": true,
+  "license": "GPL-3.0-only",
   "type": "module",
   "packageManager": "pnpm@11.5.0",
   "description": "Who Am I — a private, locally-owned life & career record that generates a resume and personal site on demand. Tauri desktop shell over a framework-agnostic TypeScript core.",
