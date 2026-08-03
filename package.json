@@ -13,6 +13,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "tauri": "tauri",
+    "release": "bash scripts/release.sh",
     "tauri:wsl": "WEBKIT_DISABLE_DMABUF_RENDERER=1 tauri dev"
   },
   "dependencies": {
