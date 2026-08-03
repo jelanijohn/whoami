@@ -9,7 +9,7 @@
 
 import type { Entry, LlmCompletionRequest } from '../types';
 import { serializeEntryBlock } from '../reduce/chunk';
-import type { AliasTable } from '../reduce/alias';
+import { requireAlias, type AliasTable } from '../reduce/alias';
 import { DATA_GUARD } from '../reduce/prompts';
 
 const SCHEMA_NOTE =
@@ -37,10 +37,11 @@ const WINS_SYSTEM =
 
 /** Fence the selected entries as data for the single wins draft call. Entries
  * render under their short aliases (see `reduce/alias.ts`) so the model never
- * sees or echoes ULIDs. */
+ * sees or echoes ULIDs; a table that doesn't cover every entry throws rather
+ * than leaking a ULID. */
 export function buildWinsPrompt(entries: Entry[], aliases: AliasTable): LlmCompletionRequest {
   const data = entries
-    .map((e) => serializeEntryBlock(e, aliases.forward.get(String(e.frontmatter.id))))
+    .map((e) => serializeEntryBlock(e, requireAlias(aliases, String(e.frontmatter.id))))
     .join('\n\n---\n\n');
   return {
     system: WINS_SYSTEM,

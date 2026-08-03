@@ -10,7 +10,7 @@
 
 import type { Entry } from '../types';
 import { serializeEntryBlock } from './chunk';
-import { aliasRetro, type AliasTable } from './alias';
+import { aliasRetro, requireAlias, type AliasTable } from './alias';
 import type { LlmCompletionRequest } from '../types';
 import type { Retrospective } from './schema';
 
@@ -45,10 +45,11 @@ const REDUCE_SYSTEM =
   SCHEMA_NOTE;
 
 /** Fence the entries as data for one map call. Entries render under their
- * short aliases so the model never sees (or spends output tokens on) ULIDs. */
+ * short aliases so the model never sees (or spends output tokens on) ULIDs;
+ * a table that doesn't cover every entry throws rather than leaking a ULID. */
 export function buildMapPrompt(entries: Entry[], aliases: AliasTable): LlmCompletionRequest {
   const data = entries
-    .map((e) => serializeEntryBlock(e, aliases.forward.get(String(e.frontmatter.id))))
+    .map((e) => serializeEntryBlock(e, requireAlias(aliases, String(e.frontmatter.id))))
     .join('\n\n---\n\n');
   return {
     system: MAP_SYSTEM,

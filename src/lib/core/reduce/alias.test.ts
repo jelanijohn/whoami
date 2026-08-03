@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildAliasTable, expandIds, expandRetro, aliasRetro } from './alias';
+import { buildAliasTable, expandIds, expandRetro, aliasRetro, requireAlias } from './alias';
 import { emptyRetro } from './schema';
 import { filterByEvidence } from './parse';
 
@@ -23,6 +23,18 @@ describe('buildAliasTable', () => {
     expect(t.forward.get(U1)).toBe('E1');
     expect(t.forward.size).toBe(2);
     expect(t.reverse.size).toBe(2);
+  });
+});
+
+describe('requireAlias', () => {
+  const t = buildAliasTable([U1, U2]);
+
+  it('returns the alias for a covered id', () => {
+    expect(requireAlias(t, U2)).toBe('E2');
+  });
+
+  it('throws for an id the table does not cover (never falls back to the ULID)', () => {
+    expect(() => requireAlias(t, U3)).toThrow(/does not cover/);
   });
 });
 

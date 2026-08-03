@@ -39,6 +39,15 @@ export function buildAliasTable(ids: readonly string[]): AliasTable {
   return { forward, reverse };
 }
 
+/** Look up the alias for a real entry id, throwing if the table doesn't cover
+ * it. Prompt assembly must never fall back to the real ULID — a mismatched
+ * table would silently leak ULIDs into the prompt (and the model's output). */
+export function requireAlias(table: AliasTable, id: string): string {
+  const alias = table.forward.get(id);
+  if (!alias) throw new Error(`Alias table does not cover entry id ${id}`);
+  return alias;
+}
+
 /** Map alias evidence back to real ids; unknown strings pass through unchanged
  * (the evidence filters drop whatever doesn't resolve to an input entry). */
 export function expandIds(evidence: readonly string[], table: AliasTable): string[] {
