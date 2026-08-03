@@ -5,6 +5,9 @@ timeline — that generates a resume and a personal website on demand. The
 record is plain Markdown in a Git repo you hold; this app (a Tauri desktop
 app) reads and writes those files but **does not own the data**.
 
+[https://wollabo.com/tools/who-am-i/](https://wollabo.com/tools/who-am-i/)
+
+
 ![The Journal — every entry on one timeline](docs/screenshots/06-journal-dark.png)
 
 ## Why
