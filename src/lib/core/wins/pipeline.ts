@@ -13,15 +13,15 @@
  */
 
 import type { Entry, Llm } from '../types';
+import { buildAliasTable, expandIds } from '../reduce/alias';
 import { buildWinsPrompt } from './prompts';
 import { parseWins, filterWinsByEvidence } from './parse';
 import type { WinDraft } from './schema';
 
 /**
- * Output cap for the wins call when the caller doesn't set one. One or more
- * wins may be drafted, each citing full 26-char ULIDs in `evidence`, so give the
- * output ample headroom. Wins cite fewer ids per item than a full retrospective,
- * so 8k is generous without going enormous (the Llm seam has no streaming).
+ * Output cap for the wins call when the caller doesn't set one. Evidence ids
+ * are short aliases (see `reduce/alias.ts`), so 8k is generous headroom without
+ * going enormous (the Llm seam has no streaming).
  */
 export const DEFAULT_WINS_MAX_TOKENS = 8192;
 
@@ -45,6 +45,12 @@ export async function draftWins(llm: Llm, input: DraftWinsInput): Promise<WinDra
 
   const maxTokens = input.maxTokens ?? DEFAULT_WINS_MAX_TOKENS;
   const validIds = new Set(entries.map((e) => String(e.frontmatter.id)));
-  const raw = await llm.complete({ ...buildWinsPrompt(entries), maxTokens });
-  return filterWinsByEvidence(parseWins(raw), validIds);
+  const table = buildAliasTable(entries.map((e) => String(e.frontmatter.id)));
+  const raw = await llm.complete({ ...buildWinsPrompt(entries, table), maxTokens });
+  // Expand aliases back to ULIDs, then let the trust-nothing filter judge.
+  const payload = parseWins(raw);
+  return filterWinsByEvidence(
+    { wins: payload.wins.map((w) => ({ ...w, evidence: expandIds(w.evidence, table) })) },
+    validIds
+  );
 }

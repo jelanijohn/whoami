@@ -15,6 +15,8 @@ This repository is the **application** (a Tauri desktop app). The **record** it
 operates on is a *separate* folder/Git repo you choose at runtime — keeping app
 code and private life data cleanly apart, exactly as the spec intends.
 
+![The Journal — every entry on one timeline, grouped by project](docs/screenshots/01-hero-journal.png)
+
 ---
 
 ## The one rule
@@ -91,6 +93,8 @@ lives in the OS app-data dir, one file per record folder, never inside the repo.
 Beyond hand-written journal entries, the app can pull history in from external
 sources and help you shape it — but **nothing reaches the record without your
 explicit promote.**
+
+![The Inbox — imported candidates staged for triage; nothing joins the record until you promote it](docs/screenshots/02-hero-inbox-dark.png)
 
 - **Ingest** (`src/lib/core/ingest/`) — adapters for GitHub, Asana, Shortcut,
   Gmail, LinkedIn, an imported résumé, your own personal website, your Claude

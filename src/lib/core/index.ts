@@ -91,6 +91,7 @@ export {
   provenanceKey,
   type PromoteOverrides,
   type WinProposal,
+  type WinProposalDraft,
   type AcceptedWin
 } from './record';
 

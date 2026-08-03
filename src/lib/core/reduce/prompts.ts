@@ -10,6 +10,7 @@
 
 import type { Entry } from '../types';
 import { serializeEntryBlock } from './chunk';
+import { aliasRetro, requireAlias, type AliasTable } from './alias';
 import type { LlmCompletionRequest } from '../types';
 import type { Retrospective } from './schema';
 
@@ -23,8 +24,9 @@ const SCHEMA_NOTE =
   'Respond with ONLY a JSON object (no prose, no code fence) of this exact shape:\n' +
   '{"worked_on":[Fact],"successes":[Fact],"failures":[Fact],"lessons":[Fact]}\n' +
   'where Fact = {"text": string, "evidence": [string], "date"?: "YYYY-MM-DD"}.\n' +
-  'Every Fact MUST cite, in "evidence", the entry id(s) it was derived from — ' +
-  'copy ids verbatim from the data. Invent nothing; if unsure, omit the fact.';
+  'Every Fact MUST cite, in "evidence", the short entry id(s) it was derived ' +
+  'from — cite them exactly as shown in the data (e.g. "E2"). Invent no ids; ' +
+  'if unsure, omit the fact.';
 
 const MAP_SYSTEM =
   'You extract a brutally-accurate historical record from project entries. ' +
@@ -42,9 +44,13 @@ const REDUCE_SYSTEM =
   '\n' +
   SCHEMA_NOTE;
 
-/** Fence the entries as data for one map call. */
-export function buildMapPrompt(entries: Entry[]): LlmCompletionRequest {
-  const data = entries.map(serializeEntryBlock).join('\n\n---\n\n');
+/** Fence the entries as data for one map call. Entries render under their
+ * short aliases so the model never sees (or spends output tokens on) ULIDs;
+ * a table that doesn't cover every entry throws rather than leaking a ULID. */
+export function buildMapPrompt(entries: Entry[], aliases: AliasTable): LlmCompletionRequest {
+  const data = entries
+    .map((e) => serializeEntryBlock(e, requireAlias(aliases, String(e.frontmatter.id))))
+    .join('\n\n---\n\n');
   return {
     system: MAP_SYSTEM,
     user: `<<<DATA\n${data}\n>>>END_DATA\n\nExtract the four fact lists as JSON.`
@@ -52,13 +58,16 @@ export function buildMapPrompt(entries: Entry[]): LlmCompletionRequest {
 }
 
 /** Fence the concatenated map outputs (plus rollup + the human's project prose,
- * also as data) for the single reduce call. */
+ * also as data) for the single reduce call. Map-output evidence is re-aliased
+ * with the same table the map calls used, shrinking this call's input AND the
+ * ids the model must echo back. */
 export function buildReducePrompt(
   mapOutputs: Retrospective[],
   rollupSummary: string,
-  projectProse: string
+  projectProse: string,
+  aliases: AliasTable
 ): LlmCompletionRequest {
-  const facts = JSON.stringify(mapOutputs);
+  const facts = JSON.stringify(mapOutputs.map((r) => aliasRetro(r, aliases)));
   const context = [
     rollupSummary ? `ROLLUP:\n${rollupSummary}` : '',
     projectProse.trim() ? `PROJECT NOTES:\n${projectProse.trim()}` : ''

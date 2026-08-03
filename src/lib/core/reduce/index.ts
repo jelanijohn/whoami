@@ -3,6 +3,7 @@
  * app-owned marker region. */
 export * from './rollup';
 export * from './schema';
+export * from './alias';
 export * from './chunk';
 export * from './prompts';
 export * from './parse';

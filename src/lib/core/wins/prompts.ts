@@ -9,14 +9,15 @@
 
 import type { Entry, LlmCompletionRequest } from '../types';
 import { serializeEntryBlock } from '../reduce/chunk';
+import { requireAlias, type AliasTable } from '../reduce/alias';
 import { DATA_GUARD } from '../reduce/prompts';
 
 const SCHEMA_NOTE =
   'Respond with ONLY a JSON object (no prose, no code fence) of this exact shape:\n' +
   '{"wins":[{"text": string, "evidence": [string]}]}\n' +
-  'Every win MUST cite, in "evidence", the entry id(s) it was derived from — ' +
-  'copy ids verbatim from the data. Invent no ids. If a claim cannot be tied to ' +
-  'an id, omit it.';
+  'Every win MUST cite, in "evidence", the short entry id(s) it was derived ' +
+  'from — cite them exactly as shown in the data (e.g. "E2"). Invent no ids. ' +
+  'If a claim cannot be tied to an id, omit it.';
 
 const WINS_SYSTEM =
   'You draft résumé-grade accomplishment statements ("wins") from a hand-picked ' +
@@ -34,9 +35,14 @@ const WINS_SYSTEM =
   '\n' +
   SCHEMA_NOTE;
 
-/** Fence the selected entries as data for the single wins draft call. */
-export function buildWinsPrompt(entries: Entry[]): LlmCompletionRequest {
-  const data = entries.map(serializeEntryBlock).join('\n\n---\n\n');
+/** Fence the selected entries as data for the single wins draft call. Entries
+ * render under their short aliases (see `reduce/alias.ts`) so the model never
+ * sees or echoes ULIDs; a table that doesn't cover every entry throws rather
+ * than leaking a ULID. */
+export function buildWinsPrompt(entries: Entry[], aliases: AliasTable): LlmCompletionRequest {
+  const data = entries
+    .map((e) => serializeEntryBlock(e, requireAlias(aliases, String(e.frontmatter.id))))
+    .join('\n\n---\n\n');
   return {
     system: WINS_SYSTEM,
     user: `<<<DATA\n${data}\n>>>END_DATA\n\nDraft the wins as JSON.`

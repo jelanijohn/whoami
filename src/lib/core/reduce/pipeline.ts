@@ -7,9 +7,14 @@
  * (plus rollup + project prose) → the merged four lists, filtered to the full
  * input ULID set. A failed chunk fails the whole run (no partial silent
  * results); an empty surviving set fails visibly.
+ *
+ * Prompts speak short aliases, not ULIDs (see `alias.ts`): one table covers the
+ * whole run, and every parsed reply is expanded back to real ids BEFORE the
+ * evidence filters — so everything outside the LLM round-trip sees only ULIDs.
  */
 
 import type { Entry, Llm } from '../types';
+import { buildAliasTable, expandRetro } from './alias';
 import { chunkEntries } from './chunk';
 import { buildMapPrompt, buildReducePrompt } from './prompts';
 import { parseRetrospective, filterByEvidence } from './parse';
@@ -19,13 +24,13 @@ import { rollupEntries, rollupSummary } from './rollup';
 /**
  * Output cap for map/reduce calls when the caller doesn't set one (plan §4.3).
  *
- * The merged retrospective for a real project is many facts, each citing full
- * 26-char ULIDs in `evidence`, so its JSON easily overflows the provider's tiny
- * 4096-token default — the reply truncates mid-object and the strict parse
- * fails with "model reply was not valid JSON". 16k gives ample headroom without
- * going enormous (the Llm seam has no streaming).
+ * Evidence ids are now short aliases (~2 output tokens vs ~15 for a quoted
+ * ULID — see `alias.ts`), so overflow is no longer expected even for a large
+ * project. 32,000 is retained as a safety net; it is also the output ceiling of
+ * the oldest Anthropic models worth supporting (Opus 4.x) — any higher and the
+ * API rejects the request outright instead of truncating.
  */
-export const DEFAULT_REDUCE_MAX_TOKENS = 16_384;
+export const DEFAULT_REDUCE_MAX_TOKENS = 32_000;
 
 export interface ReducePipelineInput {
   /** Entries to summarize — caller sorts chronologically; may include private. */
@@ -48,13 +53,17 @@ export async function runReducePipeline(
 
   const maxTokens = input.maxTokens ?? DEFAULT_REDUCE_MAX_TOKENS;
   const chunks = chunkEntries(entries, { tokenBudget: input.tokenBudget });
+  // One alias table covers the whole run, so map and reduce prompts agree on
+  // what "E47" means and merged evidence unions stay coherent.
+  const table = buildAliasTable(entries.map((e) => String(e.frontmatter.id)));
   const validIds = new Set(entries.map((e) => String(e.frontmatter.id)));
   const mapOutputs: Retrospective[] = [];
   for (const chunk of chunks) {
     const chunkIds = new Set(chunk.map((e) => String(e.frontmatter.id)));
-    const raw = await llm.complete({ ...buildMapPrompt(chunk), maxTokens });
-    // Map facts may only cite ids from their own chunk (plan §4.3).
-    mapOutputs.push(filterByEvidence(parseRetrospective(raw), chunkIds));
+    const raw = await llm.complete({ ...buildMapPrompt(chunk, table), maxTokens });
+    // Expand aliases back to ULIDs, then: map facts may only cite ids from
+    // their own chunk (plan §4.3).
+    mapOutputs.push(filterByEvidence(expandRetro(parseRetrospective(raw), table), chunkIds));
   }
 
   // An empty surviving fact set fails visibly rather than writing nothing.
@@ -78,10 +87,10 @@ export async function runReducePipeline(
 
   const summary = rollupSummary(rollupEntries(entries));
   const raw = await llm.complete({
-    ...buildReducePrompt(mapOutputs, summary, input.projectProse),
+    ...buildReducePrompt(mapOutputs, summary, input.projectProse, table),
     maxTokens
   });
-  return requireFacts(filterByEvidence(parseRetrospective(raw), validIds));
+  return requireFacts(filterByEvidence(expandRetro(parseRetrospective(raw), table), validIds));
 }
 
 /** A reduce proposal awaiting the human's accept gate (plan §4.4). Nothing is
