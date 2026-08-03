@@ -2,8 +2,9 @@
   /**
    * Wins draft review (wins-from-journal spec §6.2). Renders the LLM's drafted
    * wins as editable rows gated by a human accept step. Each kept+edited row
-   * becomes an {@link AcceptedWin} carrying its own evidence, plus the shared
-   * parent / date / privacy choice. Nothing is written until the human accepts —
+   * becomes an {@link AcceptedWin} carrying its own evidence and its own date
+   * (seeded from the latest of that draft's cited sources), plus the shared
+   * parent / privacy choice. Nothing is written until the human accepts —
    * the producer (draftWins) only proposed.
    */
   import { app } from '$lib/state.svelte';
@@ -22,21 +23,22 @@
     oncancel: () => void;
   } = $props();
 
-  // Per-row editable text + keep flag, seeded whenever the proposal changes.
+  // Per-row editable text + date + keep flag, seeded whenever the proposal
+  // changes. Each date seeds from the latest of THAT draft's cited sources.
   let texts = $state<string[]>([]);
+  let dates = $state<string[]>([]);
   let kept = $state<boolean[]>([]);
   let seededFor = $state<WinProposal | null>(null);
-  // Shared attachment / date / privacy, applied to every kept win (spec §6.2).
+  // Shared attachment / privacy, applied to every kept win (spec §6.2).
   let parent = $state('');
-  let date = $state('');
   let keepPrivate = $state(false);
   $effect(() => {
     if (proposal !== seededFor) {
       seededFor = proposal;
       texts = proposal.drafts.map((d) => d.text);
+      dates = proposal.drafts.map((d) => d.defaultDate);
       kept = proposal.drafts.map(() => true);
       parent = '';
-      date = proposal.defaultDate;
       keepPrivate = false;
     }
   });
@@ -50,19 +52,21 @@
   const roles = $derived(targets.filter((t) => t.kind === 'role'));
   const projects = $derived(targets.filter((t) => t.kind === 'project'));
 
-  const dateValid = $derived(/^\d{4}-\d{2}-\d{2}$/.test(date.trim()));
-  const anyKept = $derived(kept.some((k, i) => k && texts[i]?.trim()));
-  const canSave = $derived(anyKept && dateValid && !app.busy);
+  const isValidDate = (d: string | undefined) => /^\d{4}-\d{2}-\d{2}$/.test((d ?? '').trim());
+  const saving = $derived(kept.map((k, i) => k && !!texts[i]?.trim()));
+  const anyKept = $derived(saving.some(Boolean));
+  const datesValid = $derived(saving.every((s, i) => !s || isValidDate(dates[i])));
+  const canSave = $derived(anyKept && datesValid && !app.busy);
 
   function accept() {
     const accepted: AcceptedWin[] = proposal.drafts
       .map((d, i) => ({ d, i }))
-      .filter(({ i }) => kept[i] && texts[i]?.trim())
+      .filter(({ i }) => saving[i])
       .map(({ d, i }) => ({
         text: texts[i].trim(),
         evidence: d.evidence,
         parent: parent || undefined,
-        date: date.trim(),
+        date: dates[i].trim(),
         private: keepPrivate
       }));
     onaccept(accepted);
@@ -110,13 +114,26 @@
                 <span class="rounded bg-[var(--color-hover)] px-1.5 py-0.5">{sourceLabel(id)}</span>
               {/each}
             </div>
+            <label
+              class="flex items-center gap-1.5 text-[11px] text-[var(--color-muted)]"
+              class:opacity-50={!kept[i]}
+            >
+              <span class="font-medium">Date</span>
+              <input
+                type="date"
+                bind:value={dates[i]}
+                disabled={!kept[i]}
+                class="rounded border border-[var(--color-line)] px-1.5 py-0.5 text-xs"
+              />
+              <span>Latest of this win's cited entries — it never invents one.</span>
+            </label>
           </div>
         </li>
       {/each}
     </ul>
 
-    <div class="grid gap-3 border-t border-dashed border-[var(--color-line)] pt-3 sm:grid-cols-2">
-      <label class="flex flex-col gap-1 text-xs">
+    <div class="border-t border-dashed border-[var(--color-line)] pt-3">
+      <label class="flex flex-col gap-1 text-xs sm:max-w-[50%]">
         <span class="font-medium">Attach to</span>
         <select
           bind:value={parent}
@@ -139,18 +156,6 @@
           {/if}
         </select>
         <span class="text-[var(--color-muted)]">Applies to every kept win.</span>
-      </label>
-
-      <label class="flex flex-col gap-1 text-xs">
-        <span class="font-medium">Date</span>
-        <input
-          type="date"
-          bind:value={date}
-          class="rounded border border-[var(--color-line)] px-2 py-1 text-sm"
-        />
-        <span class="text-[var(--color-muted)]">
-          The latest date among the selected entries — it never invents one.
-        </span>
       </label>
     </div>
 
@@ -179,8 +184,8 @@
       >
         Discard
       </button>
-      {#if !dateValid}
-        <span class="text-[11px] text-[var(--color-private)]">A win needs a valid date.</span>
+      {#if !datesValid}
+        <span class="text-[11px] text-[var(--color-private)]">Every kept win needs a valid date.</span>
       {/if}
     </div>
   {/if}

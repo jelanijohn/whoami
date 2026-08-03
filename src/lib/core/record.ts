@@ -83,11 +83,16 @@ export interface WinProposal {
   sourceIds: string[];
   sourceCount: number;
   /** Evidence-verified drafts (may be empty). */
-  drafts: WinDraft[];
-  /** Latest date among the selected sources — seeds each win's date. */
-  defaultDate: string;
+  drafts: WinProposalDraft[];
   /** Provenance string, e.g. "anthropic:claude-…", or undefined. */
   model?: string;
+}
+
+/** A drafted win plus its evidence-derived default date. */
+export interface WinProposalDraft extends WinDraft {
+  /** Latest date among THIS draft's cited sources — seeds its date input
+   * (never today, never invented; every surviving draft cites >=1 source). */
+  defaultDate: string;
 }
 
 /** One accepted (possibly human-edited) win at the gate (wins spec §3.1). */
@@ -841,17 +846,23 @@ export class RecordStore {
     }
     if (entries.length === 0) throw new Error('None of the selected entries could be loaded');
 
-    // Latest date among the resolved sources seeds each win's date (never today).
-    const defaultDate = entries
-      .map((e) => String(e.frontmatter.date))
-      .reduce((a, b) => (b > a ? b : a));
-
     const drafts = await draftWinsPipeline(llm, { entries, maxTokens: opts.maxTokens });
+
+    // Each draft's date seeds from the latest date among ITS cited sources
+    // (never today). Evidence is filtered to the selected set upstream, so
+    // every cited id resolves here.
+    const dateById = new Map(
+      entries.map((e) => [String(e.frontmatter.id), String(e.frontmatter.date)])
+    );
     return {
       sourceIds: entries.map((e) => String(e.frontmatter.id)),
       sourceCount: entries.length,
-      drafts,
-      defaultDate
+      drafts: drafts.map((d) => ({
+        ...d,
+        defaultDate: d.evidence
+          .map((id) => dateById.get(id) ?? '')
+          .reduce((a, b) => (b > a ? b : a))
+      }))
     };
   }
 

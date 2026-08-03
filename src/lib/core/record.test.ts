@@ -530,19 +530,19 @@ describe('candidateRawItems + applyTriageResults (inbox LLM triage plumbing)', (
 });
 
 /**
- * A fake LLM (plan §4.3) that echoes back whatever entry ULIDs it sees in the
- * prompt as evidence — plus one fact citing a fabricated ULID, to prove the
- * evidence filter drops unverifiable claims. Map vs reduce is told apart by the
- * `MAP_OUTPUTS` marker the reduce prompt carries.
+ * A fake LLM (plan §4.3) that echoes back whatever short entry aliases it sees
+ * in the prompt as evidence — plus one fact citing a fabricated alias, to prove
+ * the evidence filter drops unverifiable claims after alias expansion. Map vs
+ * reduce is told apart by the `MAP_OUTPUTS` marker the reduce prompt carries.
  */
-const GHOST_ULID = '01HZZZZZZZZZZZZZZZZZZZZZZZ';
+const GHOST_ID = 'E999';
 function fakeReduceLlm(): { llm: Llm; calls: LlmCompletionRequest[] } {
   const calls: LlmCompletionRequest[] = [];
-  const ULID = /\b[0-7][0-9A-HJKMNP-TV-Z]{25}\b/g;
+  const ALIAS = /\bE\d+\b/g;
   const llm: Llm = {
     async complete(req) {
       calls.push(req);
-      const ids = [...new Set(req.user.match(ULID) ?? [])].filter((id) => id !== GHOST_ULID);
+      const ids = [...new Set(req.user.match(ALIAS) ?? [])].filter((id) => id !== GHOST_ID);
       if (req.user.includes('MAP_OUTPUTS')) {
         return JSON.stringify({
           worked_on: ids.length ? [{ text: 'Did the work', evidence: [ids[0]] }] : [],
@@ -550,7 +550,7 @@ function fakeReduceLlm(): { llm: Llm; calls: LlmCompletionRequest[] } {
           failures: [],
           lessons: [
             ...(ids.length ? [{ text: 'Learned a lot', evidence: [ids[0]] }] : []),
-            { text: 'Hallucinated lesson', evidence: [GHOST_ULID] }
+            { text: 'Hallucinated lesson', evidence: [GHOST_ID] }
           ]
         });
       }
@@ -558,7 +558,7 @@ function fakeReduceLlm(): { llm: Llm; calls: LlmCompletionRequest[] } {
         worked_on: ids.map((id) => ({ text: `Touched ${id.slice(-4)}`, evidence: [id] })),
         successes: [],
         failures: [],
-        lessons: [{ text: 'Injected lesson', evidence: [GHOST_ULID] }]
+        lessons: [{ text: 'Injected lesson', evidence: [GHOST_ID] }]
       });
     }
   };
@@ -600,7 +600,9 @@ describe('reduce pipeline (plan §4)', () => {
     ].flatMap((f) => f.evidence);
     expect(allEvidence.length).toBeGreaterThan(0);
     for (const id of allEvidence) expect(validIds.has(id)).toBe(true);
-    expect(allEvidence).not.toContain(GHOST_ULID);
+    expect(allEvidence).not.toContain(GHOST_ID);
+    // No raw ULIDs cross the LLM boundary — the prompt speaks aliases only.
+    expect(calls[0].user).not.toMatch(/\b[0-7][0-9A-HJKMNP-TV-Z]{25}\b/);
 
     // Two entries fit one chunk, so the single-chunk short-circuit (TODO §3.5)
     // skips the reduce pass: exactly one map call, no reduce call.
@@ -691,7 +693,7 @@ describe('reduce pipeline (plan §4)', () => {
     const llm: Llm = {
       async complete() {
         return JSON.stringify({
-          worked_on: [{ text: 'ghost', evidence: [GHOST_ULID] }],
+          worked_on: [{ text: 'ghost', evidence: [GHOST_ID] }],
           successes: [],
           failures: [],
           lessons: []
@@ -751,16 +753,27 @@ describe('wins from journal (wins-from-journal spec §3)', () => {
     };
   }
 
-  it('draftWins resolves ids, computes defaultDate = max(date), returns a proposal', async () => {
+  it('draftWins resolves ids, seeds each draft with max(date) of ITS evidence', async () => {
     const a = await store.createEntry({ type: 'journal', title: 'A', date: '2024-01-01' });
     const b = await store.createEntry({ type: 'journal', title: 'B', date: '2024-05-09' });
     const ids = [a.frontmatter.id, b.frontmatter.id];
-    const llm = cannedLlm(JSON.stringify({ wins: [{ text: 'Shipped X', evidence: ids }] }));
+    // The model cites aliases (E1/E2 in sourceIds order); drafts come back
+    // carrying the real ULIDs.
+    const llm = cannedLlm(
+      JSON.stringify({
+        wins: [
+          { text: 'Shipped X', evidence: ['E1'] },
+          { text: 'Shipped Y', evidence: ['E1', 'E2'] }
+        ]
+      })
+    );
 
     const proposal = await store.draftWins(llm, ids);
     expect(proposal.sourceCount).toBe(2);
-    expect(proposal.defaultDate).toBe('2024-05-09');
-    expect(proposal.drafts).toEqual([{ text: 'Shipped X', evidence: ids }]);
+    expect(proposal.drafts).toEqual([
+      { text: 'Shipped X', evidence: [a.frontmatter.id], defaultDate: '2024-01-01' },
+      { text: 'Shipped Y', evidence: ids, defaultDate: '2024-05-09' }
+    ]);
     expect(llm.calls).toHaveLength(1);
   });
 

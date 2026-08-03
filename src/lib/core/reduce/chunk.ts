@@ -16,13 +16,15 @@ export function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
 }
 
-/** Serialize one entry into the fenced-block shape the map prompt embeds. The
- * chunker measures against this exact text so budgeting matches the prompt. */
-export function serializeEntryBlock(entry: Entry): string {
+/** Serialize one entry into the fenced-block shape the map prompt embeds.
+ * Prompts pass a short `displayId` alias (see `alias.ts`); the chunker measures
+ * the real-ULID form, so budgeting slightly OVERestimates the aliased prompt —
+ * conservative by construction. */
+export function serializeEntryBlock(entry: Entry, displayId?: string): string {
   const fm = entry.frontmatter;
   const body = entry.body.trim();
   return [
-    `id: ${fm.id}`,
+    `id: ${displayId ?? fm.id}`,
     `date: ${fm.date}`,
     `type: ${fm.type}`,
     `title: ${fm.title}`,

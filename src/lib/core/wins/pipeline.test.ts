@@ -24,21 +24,25 @@ const entries = [
 ];
 
 describe('draftWins pipeline', () => {
-  it('returns the filtered list from a canned reply with exactly one complete call', async () => {
+  it('expands alias citations to the real ids, with exactly one complete call', async () => {
     const llm = cannedLlm(
-      JSON.stringify({ wins: [{ text: 'Shipped the importer', evidence: ['A', 'B'] }] })
+      JSON.stringify({ wins: [{ text: 'Shipped the importer', evidence: ['E1', 'E2'] }] })
     );
     const out = await draftWins(llm, { entries });
     expect(out).toEqual([{ text: 'Shipped the importer', evidence: ['A', 'B'] }]);
     expect(llm.calls).toHaveLength(1);
+    // The prompt shows aliases, never the real entry ids.
+    expect(llm.calls[0].user).toContain('id: E1');
+    expect(llm.calls[0].user).toContain('id: E2');
+    expect(llm.calls[0].user).not.toContain('id: A');
   });
 
-  it('drops drafts citing an unselected id', async () => {
+  it('drops drafts citing an unknown alias', async () => {
     const llm = cannedLlm(
       JSON.stringify({
         wins: [
-          { text: 'Grounded', evidence: ['A'] },
-          { text: 'Ungrounded', evidence: ['Z'] }
+          { text: 'Grounded', evidence: ['E1'] },
+          { text: 'Ungrounded', evidence: ['E9'] }
         ]
       })
     );

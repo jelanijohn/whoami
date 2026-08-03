@@ -7,6 +7,8 @@ import {
   hasMarkedBlock
 } from './markers';
 import { chunkEntries, serializeEntryBlock } from './chunk';
+import { buildAliasTable } from './alias';
+import { buildMapPrompt, buildReducePrompt } from './prompts';
 import { parseRetrospective, filterByEvidence } from './parse';
 import { renderRetrospective } from './render';
 import { emptyRetro } from './schema';
@@ -65,6 +67,35 @@ describe('chunking (plan §4.3)', () => {
     expect(block).toContain('id: A');
     expect(block).toContain('type: win');
     expect(block).toContain('body: body text');
+  });
+
+  it('renders a displayId alias in place of the real id when given one', () => {
+    const block = serializeEntryBlock(entry({ id: 'REALID', date: '2024-01-01' }), 'E3');
+    expect(block).toContain('id: E3');
+    expect(block).not.toContain('REALID');
+  });
+});
+
+describe('alias-aware prompts (no ULIDs cross the LLM boundary)', () => {
+  const ULID_RE = /\b[0-7][0-9A-HJKMNP-TV-Z]{25}\b/;
+  const u1 = '01HX00000000000000000000A1';
+  const u2 = '01HX00000000000000000000B2';
+  const es = [entry({ id: u1, date: '2024-01-01' }, 'x'), entry({ id: u2, date: '2024-01-02' }, 'y')];
+  const table = buildAliasTable([u1, u2]);
+
+  it('the map prompt shows entries under their aliases, never ULIDs', () => {
+    const { user } = buildMapPrompt(es, table);
+    expect(user).toContain('id: E1');
+    expect(user).toContain('id: E2');
+    expect(user).not.toMatch(ULID_RE);
+  });
+
+  it('the reduce prompt re-aliases map-output evidence with the same table', () => {
+    const retro = { ...emptyRetro(), worked_on: [{ text: 'did x', evidence: [u1, u2] }] };
+    const { user } = buildReducePrompt([retro], '', '', table);
+    expect(user).toContain('"E1"');
+    expect(user).toContain('"E2"');
+    expect(user).not.toMatch(ULID_RE);
   });
 });
 
