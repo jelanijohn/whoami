@@ -125,7 +125,7 @@
                 disabled={!kept[i]}
                 class="rounded border border-[var(--color-line)] px-1.5 py-0.5 text-xs"
               />
-              <span>Latest of this win's cited entries — it never invents one.</span>
+              <span>Seeded from the latest of this win's cited entries — never invented.</span>
             </label>
           </div>
         </li>
@@ -185,7 +185,7 @@
         Discard
       </button>
       {#if !datesValid}
-        <span class="text-[11px] text-[var(--color-private)]">Every kept win needs a valid date.</span>
+        <span class="text-[11px] text-[var(--color-private)]">Every win being saved needs a valid date.</span>
       {/if}
     </div>
   {/if}

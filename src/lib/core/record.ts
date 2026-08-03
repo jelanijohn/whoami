@@ -850,18 +850,22 @@ export class RecordStore {
 
     // Each draft's date seeds from the latest date among ITS cited sources
     // (never today). Evidence is filtered to the selected set upstream, so
-    // every cited id resolves here.
+    // every cited id resolves here — an unresolvable one is a pipeline bug
+    // and fails loudly rather than seeding an invalid date.
     const dateById = new Map(
       entries.map((e) => [String(e.frontmatter.id), String(e.frontmatter.date)])
     );
+    const dateOf = (id: string): string => {
+      const date = dateById.get(id);
+      if (!date) throw new Error(`Win draft cites an entry outside the selection: ${id}`);
+      return date;
+    };
     return {
       sourceIds: entries.map((e) => String(e.frontmatter.id)),
       sourceCount: entries.length,
       drafts: drafts.map((d) => ({
         ...d,
-        defaultDate: d.evidence
-          .map((id) => dateById.get(id) ?? '')
-          .reduce((a, b) => (b > a ? b : a))
+        defaultDate: d.evidence.map(dateOf).reduce((a, b) => (b > a ? b : a))
       }))
     };
   }
